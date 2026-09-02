@@ -1,0 +1,72 @@
+# 编译输出目录
+build/
+cmake-build-*/
+out/
+bin/
+obj/
+
+# 生成的二进制文件
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.o
+*.d
+*.a
+*.so
+*.exe
+
+# 调试/测试文件
+*.su
+*.suo
+*.user
+*.userprefs
+*.sln.docstates
+*.db_*shm
+*.db_*wal
+
+# IDE 配置（vscode / CLion / Eclipse 等）
+.vscode/
+.idea/
+*.iml
+.cproject
+.project
+.settings/
+.classpath
+.externalToolBuilders/
+.launches
+.metadata/
+*.launch
+*.psess
+*.pj
+
+# CMake 生成文件（除了 CMakeLists.txt 和 CMakePresets.json 外）
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+*.cmake
+!CMakeLists.txt
+!CMakePresets.json
+!*.cmake.in  # 保留模板文件
+
+# STM32CubeMX 生成的可忽略中间文件（.ioc 保留）
+.mxproject
+Drivers/.mxproject  # 如果Drivers内有类似文件
+*.ioc.bak
+*.ioc.tmp
+
+# 日志和临时文件
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+*.orig
+*.rej
+
+# 操作系统垃圾文件
+Thumbs.db
+.DS_Store
