@@ -1,0 +1,55 @@
+# ===== 编译输出 =====
+build/
+cmake-build-*/
+out/
+bin/
+obj/
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.o
+*.d
+*.a
+*.so
+*.exe
+*.su
+
+# ===== CMake 生成文件（源码里的 cmake/ 工具链文件保留）=====
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+Makefile
+build.ninja
+.ninja_deps
+.ninja_log
+
+# ===== STM32CubeMX 生成的本地状态文件（.ioc 源文件保留）=====
+.mxproject
+*.ioc.bak
+*.ioc.tmp
+
+# ===== IDE / 编辑器配置 =====
+.vscode/
+.idea/
+*.iml
+*.launch
+.metadata/
+*.suo
+*.user
+*.userprefs
+*.swp
+*.swo
+
+# ===== 日志和临时文件 =====
+*.log
+*.tmp
+*~
+*.orig
+*.rej
+
+# ===== 操作系统垃圾文件 =====
+Thumbs.db
+.DS_Store
