@@ -89,9 +89,9 @@ extern "C" {
    而不是静默裁剪) */
 #define MS_XY_LIMITS_ENABLE 0
 #define MS_XY_X_MIN   0.0f
-#define MS_XY_X_MAX   300.0f
+#define MS_XY_X_MAX   100.0f
 #define MS_XY_Y_MIN   0.0f
-#define MS_XY_Y_MAX   300.0f
+#define MS_XY_Y_MAX   100.0f
 
 /* Init 时是否把两电机当前编码器位置清零并定为 (0,0) 原点。
    1: 上电坐标系自洽(电机不动, 只重定义计数), 开箱即用

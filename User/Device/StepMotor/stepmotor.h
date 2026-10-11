@@ -36,6 +36,14 @@ extern "C" {
 #define STEP_STEPS_PER_REV_09  400U  /* 0.9° 步进电机整步数/圈 */
 #define STEP_MAX_SPEED_RPM     5000.0f /* Emm_V5 速度参数上限(RPM) */
 
+/* 0x36 实时位置回包原始值的每圈计数(换算 total_angle 用):
+   Emm 固件 0~65535 表示一圈 -> 65536 (X42S 手册 V1.0.5 §5.5.13);
+   X 固件 角度值 = 原始值/10 度 -> 3600。 读 0x1A 选项状态 bit1 可辨:
+   1=Emm 固件(用本默认值), 0=X 固件(改 3600 重编译) */
+#ifndef STEP_CPOS_RAW_PER_REV
+#define STEP_CPOS_RAW_PER_REV 65536.0f
+#endif
+
 #define STEP_MAX_MOTORS 4U /* 最多可注册的电机实例数 */
 
 /* ========================================================================== */
@@ -77,9 +85,21 @@ typedef struct
   uint8_t  setAcc;             /* 加速度 0-255, 0 表示直接启动 */
 
   /* 反馈(CAN 中断更新) */
-  float    total_angle;        /* 实时位置(度, 带符号多圈) */
-  int32_t  curPulse;           /* 实时脉冲数(原始值, 未除细分) */
+  float    total_angle;        /* 实时位置(度, 带符号多圈, 按 STEP_CPOS_RAW_PER_REV 折算) */
+  int32_t  curPulse;           /* 0x36 原始位置值(已解卷绕累计, 单位同回包) */
   uint16_t no_rx_count;        /* 连续未收到应答计数 */
+
+  /* 0x36 回包诊断(CAN 中断写, 主循环打印; 用于核对实际回包格式) */
+  volatile uint8_t  cpos_raw_dlc;      /* 最近一帧 0x36 回包的 DLC */
+  volatile uint8_t  cpos_raw_data[8];  /* 最近一帧 0x36 回包原始字节 */
+  volatile uint32_t cpos_raw_count;    /* 累计收到的 0x36 回包数 */
+  volatile int32_t  cpos_prev_raw;     /* 上次原始值(解卷绕基准) */
+  volatile uint8_t  cpos_base_valid;   /* 卷绕基准是否已建立 */
+  volatile uint8_t  cpos_skip;         /* 清零后需丢弃的在途旧回包数(防再锚定竞态) */
+
+  /* F1(QPos 运动参数)应答状态(诊断): 02=生效 E2=参数被拒 EE=格式错 */
+  volatile uint8_t  f1_status;
+  volatile uint32_t f1_count;          /* 累计收到的 F1 应答数(每次重发 +1) */
 } StepMotor_t;
 
 /* ========================================================================== */

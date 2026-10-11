@@ -4,6 +4,8 @@
  *          分层: 输出经 drv_pwm 驱动层(PWM_Channel_*), 舵机模块只做角度↔脉宽换算,
  *          不直接操作 HAL; 50Hz 时间基由 drv_pwm 按定时器实际时钟重算
  *          CH1/CH2/CH3 分别映射 PE9 / PE11 / PE13(引脚复用由 CubeMX 配置)
+ *
+ *          通道分配: CH1/CH2 = 夹爪(Grip), CH3 = 旋转托盘(Tray)
  */
 
 #ifndef __SERVO_H__
@@ -34,6 +36,8 @@ extern "C" {
 /**
   * @brief  启动 CH1/CH2/CH3 的 PWM 输出并恢复中位
   * @note   必须在 MX_TIM1_Init() 之后调用; CH2/CH3 的输出比较配置由本函数运行时补全
+  *         幂等: 三路一并初始化, 重复调用直接返回 —— Grip 与 Tray 可各自调用
+  *         (CH1/CH2 = 夹爪, CH3 = 托盘, 见各自模块的通道映射宏)
   */
 void Servo_Init(void);
 
@@ -41,6 +45,7 @@ void Servo_Init(void);
   * @brief  ±135° 舵机角度控制
   * @param  channel TIM_CHANNEL_1 / TIM_CHANNEL_2 / TIM_CHANNEL_3
   * @param  angle   角度, -135 ~ +135 度(超限自动钳位)
+  * @note   需先 Servo_Init(); 角度为绝对量, 舵机开环无位置反馈
   */
 void Servo_SetAngle_135(uint32_t channel, int16_t angle);
 
@@ -49,6 +54,7 @@ void Servo_SetAngle_135(uint32_t channel, int16_t angle);
   * @param  channel TIM_CHANNEL_1 / TIM_CHANNEL_2 / TIM_CHANNEL_3
   * @param  angle   角度, 0 ~ 270 度(超限自动钳位, 负值钳到 0)
   *                 0°→500µs, 135°→1500µs(中位), 270°→2500µs
+  * @note   需先 Servo_Init(); 角度为绝对量, 舵机开环无位置反馈
   */
 void Servo_SetAngle_270(uint32_t channel, int16_t angle);
 

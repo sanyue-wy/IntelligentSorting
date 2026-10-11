@@ -25,6 +25,10 @@
 /* 三路舵机通道对象, 下标 = TIM_CHANNEL_x >> 2 */
 static PWM_ChannelObject s_servo_ch[3];
 
+/* Init 幂等标志: 现在有 Grip(夹爪 CH1/CH2) 与 Tray(托盘 CH3) 两个模块
+   各自需要舵机输出, 谁先 Init 不确定 —— 用标志保证三路只真正初始化一次 */
+static uint8_t s_inited;
+
 /* ========================================================================== */
 /*  舵机接口                                                                   */
 /* ========================================================================== */
@@ -32,11 +36,17 @@ static PWM_ChannelObject s_servo_ch[3];
 /**
   * @brief  启动 CH1/CH2/CH3 的 PWM 输出并恢复零位
   * @note   必须在 MX_TIM1_Init() 之后调用; 失败视为致命错误
+  *         幂等: 三路同时初始化, 重复调用直接返回(可被 Grip/Tray 各自调用)
   */
 void Servo_Init(void)
 {
   static const uint32_t s_channels[3] = {TIM_CHANNEL_1, TIM_CHANNEL_2, TIM_CHANNEL_3};
   static const char *const s_names[3] = {"SERVO_CH1", "SERVO_CH2", "SERVO_CH3"};
+
+  if (s_inited)
+  {
+    return;
+  }
 
   /******舵机恢复中位*********/
   for (uint8_t i = 0; i < 3U; i++)
@@ -47,6 +57,8 @@ void Servo_Init(void)
       Error_Handler();
     }
   }
+
+  s_inited = 1U;
 }
 
 /**

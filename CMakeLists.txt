@@ -46,6 +46,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
     User/Middleware/Driver/drv_can.c
+    User/Middleware/Driver/drv_usb.c
     User/Middleware/Algorithm/Controller/pid.c
     User/Middleware/Algorithm/Controller/feedforward.c
     User/Middleware/Algorithm/Controller/td.c
@@ -58,7 +59,11 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     User/Middleware/Driver/drv_pwm.c
     User/APP/debug.c
     User/APP/task_it.c
-    User/APP/Module/motion_sys_XY.c
+    User/Module/Motion_SYS_XY/motion_sys_XY.c
+    User/Module/Communication/host_comm.c
+    User/Module/Grip/grip.c
+    User/Module/StorageTray/storage.c
+    User/Module/Tray/tray.c
    User/Middleware/Driver/drv_tim.c
 )
 
@@ -72,7 +77,12 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     User/Device/DJ_Motor
     User/Device/servo
     User/APP
-    User/APP/Module
+    User/Module
+    User/Module/Motion_SYS_XY
+    User/Module/Communication
+    User/Module/Grip
+    User/Module/StorageTray
+    User/Module/Tray
 )
 
 # Add project symbols (macros)

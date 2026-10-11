@@ -22,7 +22,7 @@
 #include "usbd_cdc_if.h"
 
 /* USER CODE BEGIN INCLUDE */
-
+#include "drv_usb.h" /* 参照 USTC-RoboWalker: 收包桥接到 drv_usb 双缓冲分发 */
 /* USER CODE END INCLUDE */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -261,8 +261,8 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
-  USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
-  USBD_CDC_ReceivePacket(&hUsbDeviceFS);
+  /* 双缓冲切换 + 重新武装 + 业务回调都在 USB_ReceiveCallback 里完成 */
+  USB_ReceiveCallback(Buf, *Len);
   return (USBD_OK);
   /* USER CODE END 6 */
 }

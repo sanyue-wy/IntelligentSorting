@@ -19,6 +19,8 @@ StepMotor_t StepMotor_ZDT[2];
 
 /* S_CPOS 查询应答帧中的功能码(见 stepmotor_ZDT.c Emm_V5_Read_Sys_Params) */
 #define STEP_FUNC_CPOS 0x36U
+/* F1 快速位置模式参数应答帧功能码 */
+#define STEP_FUNC_QPARAMS 0xF1U
 
 /* ========================================================================== */
 /*  私有辅助函数                                                               */
@@ -73,18 +75,20 @@ static void StepMotor_SpeedToDirVel(float speed, uint8_t *dir, uint16_t *vel)
   *vel = StepMotor_SpeedMagnitude(speed);
 }
 
-/**
-  * @brief  脉冲数(原始值) -> 角度(度)
-  */
-static float StepMotor_PulseToDeg(const StepMotor_t *m, int32_t pulse)
-{
-  return (float)pulse * 360.0f / ((float)m->steps_per_rev * (float)m->microstep);
-}
-
 /* ========================================================================== */
 /*  CAN 接收回调(签名适配 CAN_RxCallback_t)                                    */
 /* ========================================================================== */
 
+/**
+  * @brief  应答帧回调(中断上下文): 任意应答清超时计数; 0x36 实时位置抓原始
+  *         字节并按手册格式解析 -> curPulse(解卷绕原始值) / total_angle(度)
+  * @note   回包格式(X42S 手册 V1.0.5 §5.5.13 + §4.2.2, 地址在帧 ID 里):
+  *           DLC=7: [36][符号00/01][位置 4B 大端][6B]
+  *           兼容旧格式 DLC=6: [36][位置 int32 大端][6B]
+  *         单位: 原始值按 STEP_CPOS_RAW_PER_REV 折算成度(默认 Emm 65536/圈);
+  *         原始值按圈回绕时(0~65535)用最短增量解卷绕 —— 轮询周期 6ms,
+  *         单拍位移远小于半圈, 取模增量必然安全。
+  */
 static void StepMotor_CAN_Callback(CAN_BusObject *bus, CAN_RxHeaderTypeDef *header, uint8_t *data)
 {
   (void)bus;
@@ -100,18 +104,76 @@ static void StepMotor_CAN_Callback(CAN_BusObject *bus, CAN_RxHeaderTypeDef *head
     /* 收到该电机任意应答帧即清零超时计数 */
     Motors[i]->no_rx_count = 0;
 
-    /* S_CPOS 实时位置应答(地址在帧 ID 里, 数据域 = 功能码 + 脉冲 + 校验):
-       0x36 + 4字节脉冲(大端有符号) + 0x6B, 共 6 字节 */
-    if (header->DLC == 6U &&
-        data[0] == STEP_FUNC_CPOS &&
-        data[5] == 0x6BU)
+    /* F1(QPos 参数)应答: [F1][状态02/E2/EE][6B] —— 记录状态供日志核对
+       (F1 不生效时 FC 会按相对模式累加, 电机跑飞) */
+    if (header->DLC >= 2U && data[0] == STEP_FUNC_QPARAMS)
     {
-      int32_t pulse = (int32_t)(((uint32_t)data[1] << 24) |
-                                ((uint32_t)data[2] << 16) |
-                                ((uint32_t)data[3] << 8)  |
-                                ((uint32_t)data[4]));
-      Motors[i]->curPulse    = pulse;
-      Motors[i]->total_angle = StepMotor_PulseToDeg(Motors[i], pulse);
+      Motors[i]->f1_status = data[1];
+      Motors[i]->f1_count++;
+    }
+
+    if (header->DLC >= 1U && data[0] == STEP_FUNC_CPOS)
+    {
+      int32_t raw = 0;
+      uint8_t ok  = 0;
+
+      /* 抓原始字节(诊断): 主循环在首帧/格式变化时打 hex, 核对实际格式 */
+      Motors[i]->cpos_raw_dlc = header->DLC;
+      for (uint8_t b = 0U; (b < header->DLC) && (b < 8U); b++)
+      {
+        Motors[i]->cpos_raw_data[b] = data[b];
+      }
+      Motors[i]->cpos_raw_count++;
+
+      if (header->DLC == 7U && data[6] == 0x6BU)
+      {
+        uint32_t v = ((uint32_t)data[2] << 24) | ((uint32_t)data[3] << 16) |
+                     ((uint32_t)data[4] << 8)  |  (uint32_t)data[5];
+        v &= 0x7FFFFFFFu; /* 幅值不会到 2^31, 掩掉极端位型的有符号取负 UB */
+        raw = (data[1] == 0x01U) ? -(int32_t)v : (int32_t)v;
+        ok  = 1U;
+      }
+      else if (header->DLC == 6U && data[5] == 0x6BU)
+      {
+        raw = (int32_t)(((uint32_t)data[1] << 24) | ((uint32_t)data[2] << 16) |
+                        ((uint32_t)data[3] << 8)  |  (uint32_t)data[4]);
+        ok  = 1U;
+      }
+
+      if (Motors[i]->cpos_skip != 0U)
+      {
+        /* ClearAngle 之后的守护: 驱动器复位落地前可能有在途旧回包,
+           用它重建基准会把 k*每圈计数 的幽灵偏移永久锁进反馈, 丢弃 */
+        Motors[i]->cpos_skip--;
+      }
+      else if (ok)
+      {
+        if (Motors[i]->cpos_base_valid == 0U)
+        {
+          Motors[i]->cpos_prev_raw   = raw;
+          Motors[i]->curPulse        = raw;
+          Motors[i]->cpos_base_valid = 1U;
+        }
+        else
+        {
+          /* 最短增量解卷绕: 兼容按圈回绕(Emm 65536/圈)与连续计数两种固件。
+             模数取自 STEP_CPOS_RAW_PER_REV(切 X 固件 3600 时同步生效);
+             轮询 6ms/拍、800RPM 下单拍位移 ~5k 计数, 远小于半圈(32768)。
+             无符号回绕求差规避有符号溢出 UB */
+          uint32_t wrap = (uint32_t)(int32_t)STEP_CPOS_RAW_PER_REV;
+          uint32_t du   = (uint32_t)raw - (uint32_t)Motors[i]->cpos_prev_raw;
+          int32_t  d    = (int32_t)(du % wrap);
+
+          if (d > (int32_t)(wrap / 2U))
+          {
+            d -= (int32_t)wrap;
+          }
+          Motors[i]->cpos_prev_raw = raw;
+          Motors[i]->curPulse     += d;
+        }
+        Motors[i]->total_angle = (float)Motors[i]->curPulse *
+                                 (360.0f / STEP_CPOS_RAW_PER_REV);
+      }
     }
     break;
   }
@@ -155,6 +217,18 @@ void StepMotor_Init(StepMotor_t *m, uint8_t addr, StepMotorType_e type, uint8_t 
   m->curPulse    = 0;
   m->no_rx_count = 0;
   m->enabled     = 0;
+
+  m->cpos_raw_dlc     = 0U;
+  m->cpos_raw_count   = 0U;
+  m->cpos_prev_raw    = 0;
+  m->cpos_base_valid  = 0U;
+  m->cpos_skip        = 0U;
+  m->f1_status        = 0U;
+  m->f1_count         = 0U;
+  for (uint8_t b = 0U; b < 8U; b++)
+  {
+    m->cpos_raw_data[b] = 0U;
+  }
 
   m->initialized = 1;
   Motors[motorCount++] = m;
@@ -281,6 +355,9 @@ void StepMotor_ClearAngle(StepMotor_t *m)
   m->curPulse    = 0;
   m->total_angle = 0.0f;
   m->setAngle    = 0.0f;
+  m->cpos_base_valid = 0U; /* 驱动器计数已清零, 下一帧重建解卷绕基准 */
+  m->cpos_skip   = 2U;     /* 丢弃复位落地前的在途旧回包(轮询 6ms/拍, 2 帧足够),
+                              否则旧值重建基准 -> 下一帧解卷绕锁进 k*每圈 偏移 */
   __set_PRIMASK(primask);
 
   Emm_V5_Reset_CurPos_To_Zero(m->addr);
