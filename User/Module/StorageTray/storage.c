@@ -24,6 +24,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "storage.h"
+#include "drv_tim.h"
 
 /* ========================================================================== */
 /*  私有宏                                                                     */
@@ -175,7 +176,7 @@ static Storage_Result_e Storage_Start(float angle)
 
   s_tgt_angle   = angle;
   s_ok_active   = 0U;
-  s_move_start  = HAL_GetTick();
+  s_move_start  = SysTime_GetMs();
   s_state       = STORAGE_MOVING;
 
   /* 角度环(TD+PID) -> 速度环 -> 电流, 全部在 DJ_MotorRun 3ms 里跑 */
@@ -366,7 +367,7 @@ Storage_State_e Storage_GetState(void)
   }
 
   /* --- 超时: 转不到位就停机, 不无限较劲 --- */
-  if ((HAL_GetTick() - s_move_start) >= STORAGE_MOVE_TIMEOUT_MS)
+  if ((SysTime_GetMs() - s_move_start) >= STORAGE_MOVE_TIMEOUT_MS)
   {
     Storage_Stop();
     s_state = STORAGE_FAULT;
@@ -386,9 +387,9 @@ Storage_State_e Storage_GetState(void)
       if (!s_ok_active)
       {
         s_ok_active = 1U;
-        s_ok_since  = HAL_GetTick();
+        s_ok_since  = SysTime_GetMs();
       }
-      else if ((HAL_GetTick() - s_ok_since) >= STORAGE_ARRIVE_HOLD_MS)
+      else if ((SysTime_GetMs() - s_ok_since) >= STORAGE_ARRIVE_HOLD_MS)
       {
         /* 稳定到位: 锁存当前槽位, 卸力(角度环自带保持, 清零只去静差扭矩) */
         s_state    = STORAGE_IDLE;

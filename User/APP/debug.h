@@ -26,6 +26,7 @@ extern "C" {
  *   10.grip_debug     夹爪机构 双舵机:舵机1 Z 轴升降 + 舵机2 开合(舵机会动!)
  *   11.storage_debug  旋转储物盘 3508 直驱: 6 格逐个转位 + 方向/最短路径核对(电机会转!)
  *   12.tray_debug     旋转托盘 单舵机: 0~270° 扫描 + 相对转动/越界钳位核对(舵机会动!)
+ *   13.msgcenter_debug 消息中心 Pub/Sub 自检(1对1收发/多订阅广播/满队覆盖/参数边界)
  ******************************************************************************
  */
 
@@ -36,6 +37,7 @@ extern "C" {
 #define stepmotor_debug  0
 #define dji_motor_debug  0
 #define servo_debug  0
+#define msgcenter_debug  0
 /* 8. motion_debug    CoreXY 运动系统(电机会动! 8 条单腿 + 正方形循环)
       注意: 与 stepmotor_debug(双主控)、host_debug(双指挥)互斥 */
 #define motion_debug  0
@@ -118,6 +120,10 @@ extern "C" {
 #include "drv_usb.h"        /* USB_Transmit_Data / usb0: 主机联调测试发帧 */
 #include "motion_sys_XY.h"  /* 状态行打印运动态/位置(cmd/act) */
 #include "stepmotor.h"      /* StepMotor_ZDT: F1(QPos 参数)应答打印 */
+#endif
+
+#if msgcenter_debug==1
+#include "messagecenter.h"
 #endif
 
 void debug_init(void);

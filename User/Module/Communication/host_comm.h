@@ -88,6 +88,7 @@ extern "C" {
 
 /* Includes ------------------------------------------------------------------*/
 #include <stdint.h>
+#include <stdbool.h>
 
 /* ========================================================================== */
 /*  协议常量                                                                   */
@@ -107,6 +108,7 @@ extern "C" {
 #define HOST_FLAG_ESTOP    0x04U /* bit2: 急停(锁存) */
 #define HOST_FLAG_CLEAR    0x08U /* bit3: 清报警(清除 ERROR + 急停锁存) */
 #define HOST_FLAG_CANCEL   0x10U /* bit4: 取消当前任务 */
+#define HOST_FLAG_PERMIT   0x20U /* bit5: 整机上位机许可信号(允许执行抓取) */
 
 /* ---- 下行 GRIP_CMD ---- */
 #define HOST_GRIP_HOLD     0U    /* 保持不动 */
@@ -152,6 +154,7 @@ extern "C" {
 #define HOST_ERR_ESTOP     0x0100U /* 急停锁存 */
 #define HOST_ERR_INTERNAL  0x0200U /* 内部故障(运动系统 FAULT/通信异常) */
 #define HOST_ERR_COMM      0x0400U /* 通信异常/掉线恢复(链路看门狗触发) */
+#define HOST_ERR_FOREIGN_OBJ 0x0800U /* 异物检测报警 */
 
 /* ---- 上行 RESULT_FLAGS(任务结果位) ---- */
 #define HOST_RES_DONE      0x01U /* 任务结束, 成功或失败 */
@@ -222,6 +225,25 @@ typedef struct
   uint16_t timeout_ms; /* TIMEOUT */
 } HostCmd_t;
 
+/* 上行状态帧解析结果(供上位机或外部调用解包) */
+typedef struct
+{
+  uint8_t  flags;        /* HOST_UF_* 标志集合 */
+  uint16_t seq;          /* 上行帧流水号 */
+  uint32_t task_id;      /* 当前任务 ID */
+  int32_t  cur_x_um;     /* 实际 X 坐标 (um) */
+  int32_t  cur_y_um;     /* 实际 Y 坐标 (um) */
+  float    cur_x_mm;     /* 实际 X 坐标 (mm) */
+  float    cur_y_mm;     /* 实际 Y 坐标 (mm) */
+  uint8_t  state;        /* 主状态 HOST_STATE_* */
+  uint8_t  gripper;      /* 夹爪状态 HOST_GRIP_ST_* */
+  uint16_t error;        /* 错误掩码 HOST_ERR_* */
+  uint16_t ack_seq;      /* ACK 命令流水号 */
+  uint8_t  progress;     /* 进度百分比 (0~100) */
+  uint8_t  res_flags;    /* 任务结果标志 HOST_RES_* */
+  uint8_t  res_stage;    /* 失败/中止阶段 HOST_STAGE_* */
+} HostStatus_t;
+
 /* 运行统计(中断写, 主循环读) */
 typedef struct
 {
@@ -281,6 +303,78 @@ void HostComm_GetStats(HostCommStats_t *out);
   * @brief  读首次运动诊断快照(CAN/F1 应答, 定位"受理但不走")
   */
 void HostComm_GetDiag(HostDiag_t *out);
+
+/* ---- 业务层 (app.c) 协同接口 ---- */
+typedef bool (*HostCmdHook_fn)(const HostCmd_t *cmd);
+
+/**
+  * @brief  注册业务层命令拦截钩子
+  * @param  hook: 返回 true 表示该命令由业务层接管消费, 底层不再走缺省分发
+  */
+void HostComm_RegisterCmdHook(HostCmdHook_fn hook);
+
+/**
+  * @brief  业务层通知: 任务执行成功
+  */
+void HostComm_ReportSuccess(void);
+
+/**
+  * @brief  业务层通知: 任务执行失败
+  * @param  stage: 失败阶段 (HOST_STAGE_*)
+  * @param  err:   错误码掩码 (HOST_ERR_*)
+  */
+void HostComm_ReportFail(uint8_t stage, uint16_t err);
+
+/**
+  * @brief  业务层通知: 任务被中止(取消/急停/超时)
+  * @param  stage: 中止阶段
+  */
+void HostComm_ReportAbort(uint8_t stage);
+
+/* ========================================================================== */
+/*  上位机通用封包/解包便捷工具函数 (可在 STM32 或上位机 C/C++ 程序中直接复用)   */
+/* ========================================================================== */
+
+/**
+  * @brief  将 HostCmd_t 命令结构体打包为标准 32 字节下行二进制帧
+  * @param  out_frame: 输出 32 字节缓冲区
+  * @param  cmd: 待打包的命令结构体
+  */
+void HostComm_PackCmd(uint8_t out_frame[HOST_FRAME_LEN], const HostCmd_t *cmd);
+
+/**
+  * @brief  将接收到的 32 字节上行二进制帧解包为 HostStatus_t 状态结构体
+  * @param  in_frame: 输入 32 字节原始报文
+  * @param  out_status: 解析出的状态结构体指针
+  * @return true=校验成功并解析完成, false=帧头或版本不匹配
+  */
+bool HostComm_UnpackStatus(const uint8_t in_frame[HOST_FRAME_LEN], HostStatus_t *out_status);
+
+/**
+  * @brief  快速构造【目标位置移动】指令帧 (单位: mm)
+  */
+void HostComm_BuildMoveCmd(uint8_t out_frame[HOST_FRAME_LEN], uint16_t seq, uint32_t task_id,
+                           float x_mm, float y_mm, uint16_t timeout_ms);
+
+/**
+  * @brief  快速构造【整机上位机抓取许可 (PERMIT)】指令帧
+  */
+void HostComm_BuildPermitCmd(uint8_t out_frame[HOST_FRAME_LEN], uint16_t seq, uint32_t task_id);
+
+/**
+  * @brief  快速构造【急停 (ESTOP)】指令帧
+  */
+void HostComm_BuildEstopCmd(uint8_t out_frame[HOST_FRAME_LEN], uint16_t seq);
+
+/**
+  * @brief  快速构造【清除报警与复位 (CLEAR)】指令帧
+  */
+void HostComm_BuildClearCmd(uint8_t out_frame[HOST_FRAME_LEN], uint16_t seq);
+
+/**
+  * @brief  快速构造【取消当前任务 (CANCEL)】指令帧
+  */
+void HostComm_BuildCancelCmd(uint8_t out_frame[HOST_FRAME_LEN], uint16_t seq, uint32_t task_id);
 
 #ifdef __cplusplus
 }

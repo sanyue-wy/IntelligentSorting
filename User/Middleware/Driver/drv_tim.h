@@ -106,6 +106,11 @@ uint32_t TIM_Timer_GetClockHz(TIM_TypeDef *instance);
 uint8_t  TIM_Timer_CalcTimebase(uint32_t clock_hz, uint32_t period_us, uint16_t *psc, uint16_t *arr);
 uint8_t  TIM_Timer_CalcFreq(uint32_t clock_hz, uint32_t freq_hz, uint16_t *psc, uint16_t *arr);
 
+/**
+ * @brief  获取系统运行毫秒数 (硬件/系统时间基准抽象)
+ */
+uint32_t SysTime_GetMs(void);
+
 #ifdef __cplusplus
 }
 #endif

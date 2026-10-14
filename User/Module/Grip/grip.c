@@ -14,6 +14,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "grip.h"
 #include "servo.h"
+#include "drv_tim.h"
 
 /* ========================================================================== */
 /*  私有变量                                                                   */
@@ -43,7 +44,7 @@ static uint8_t  s_jaw_busy;
   */
 static void Grip_AgeBusy(void)
 {
-  uint32_t now = HAL_GetTick();
+  uint32_t now = SysTime_GetMs();
 
   if (s_z_busy && ((int32_t)(now - s_z_busy_until) >= 0))
   {
@@ -58,7 +59,7 @@ static void Grip_AgeBusy(void)
 /* 起一次动作计时(两轴共用) */
 static void Grip_ArmTimer(uint32_t *until, uint8_t *busy, uint32_t duration_ms)
 {
-  *until = HAL_GetTick() + duration_ms;
+  *until = SysTime_GetMs() + duration_ms;
   *busy  = 1U;
 }
 

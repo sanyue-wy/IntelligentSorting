@@ -17,7 +17,16 @@ extern "C" {
 
 /* Includes ------------------------------------------------------------------*/
 #include <stdint.h>
-#include "tim.h"
+/* ========================================================================== */
+/*  通道定义 (设备层抽象, 不依赖特定硬件定时器宏)                             */
+/* ========================================================================== */
+
+typedef enum {
+    SERVO_CH_1 = 0,             /* 舵机通道 1 (对应 TIM1 CH1 / PE9) */
+    SERVO_CH_2 = 1,             /* 舵机通道 2 (对应 TIM1 CH2 / PE11) */
+    SERVO_CH_3 = 2,             /* 舵机通道 3 (对应 TIM1 CH3 / PE13) */
+    SERVO_CH_MAX
+} ServoChannel_e;
 
 /* ========================================================================== */
 /*  配置宏                                                                     */
@@ -57,6 +66,11 @@ void Servo_SetAngle_135(uint32_t channel, int16_t angle);
   * @note   需先 Servo_Init(); 角度为绝对量, 舵机开环无位置反馈
   */
 void Servo_SetAngle_270(uint32_t channel, int16_t angle);
+
+/**
+  * @brief  获取舵机通道对应的底层定时器硬件通道号 (仅供驱动自检/脉宽回读使用)
+  */
+uint32_t Servo_GetHwChannel(ServoChannel_e ch);
 
 #ifdef __cplusplus
 }

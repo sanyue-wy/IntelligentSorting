@@ -384,6 +384,12 @@ uint8_t TIM_Timer_CalcFreq(uint32_t clock_hz, uint32_t freq_hz, uint16_t *psc, u
   */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
+  if (htim->Instance == TIM4)
+  {
+    HAL_IncTick();
+    return;
+  }
+
   TIM_TimerObject *timer = TIM_Timer_FindByHandle(htim);
 
   if (timer == NULL)
@@ -426,4 +432,9 @@ void HAL_TIM_ErrorCallback(TIM_HandleTypeDef *htim)
   {
     timer->stats.err_count++;
   }
+}
+
+uint32_t SysTime_GetMs(void)
+{
+  return HAL_GetTick();
 }

@@ -61,20 +61,37 @@ void Servo_Init(void)
   s_inited = 1U;
 }
 
+static uint8_t Servo_ChannelToIndex(uint32_t channel)
+{
+  if (channel == SERVO_CH_1 || channel == TIM_CHANNEL_1) return 0U;
+  if (channel == SERVO_CH_2 || channel == TIM_CHANNEL_2) return 1U;
+  if (channel == SERVO_CH_3 || channel == TIM_CHANNEL_3) return 2U;
+  return 0xFFU;
+}
+
+uint32_t Servo_GetHwChannel(ServoChannel_e ch)
+{
+  static const uint32_t s_channels[3] = {TIM_CHANNEL_1, TIM_CHANNEL_2, TIM_CHANNEL_3};
+  if ((uint32_t)ch < 3U)
+  {
+    return s_channels[ch];
+  }
+  return TIM_CHANNEL_1;
+}
+
 /**
   * @brief  ±135° 舵机角度控制
-  * @param  channel TIM_CHANNEL_1 / TIM_CHANNEL_2 / TIM_CHANNEL_3
+  * @param  channel 逻辑通道 SERVO_CH_1/2/3 或底层 TIM_CHANNEL_x
   * @param  angle   角度, -135 ~ +135 度(超限自动钳位)
   */
 void Servo_SetAngle_135(uint32_t channel, int16_t angle)
 {
   int32_t offset;
   uint32_t pulse_us;
+  uint8_t idx = Servo_ChannelToIndex(channel);
 
   /* 非法通道直接返回 */
-  if (channel != TIM_CHANNEL_1 &&
-      channel != TIM_CHANNEL_2 &&
-      channel != TIM_CHANNEL_3)
+  if (idx >= 3U)
   {
     return;
   }
@@ -87,13 +104,12 @@ void Servo_SetAngle_135(uint32_t channel, int16_t angle)
   offset   = (int32_t)angle * ((int32_t)SERVO_MAX_US - (int32_t)SERVO_CENTER_US) / SERVO_ANGLE_MAX;
   pulse_us = (uint32_t)((int32_t)SERVO_CENTER_US + offset);
 
-  /* TIM_CHANNEL_x = (x-1)*4, >>2 即通道下标(HAL 的 CCR 索引同款约定) */
-  PWM_Channel_SetPulse(&s_servo_ch[channel >> 2], pulse_us);
+  PWM_Channel_SetPulse(&s_servo_ch[idx], pulse_us);
 }
 
 /**
   * @brief  0~270° 舵机角度控制(同一行程的另一种角度原点约定)
-  * @param  channel TIM_CHANNEL_1 / TIM_CHANNEL_2 / TIM_CHANNEL_3
+  * @param  channel 逻辑通道 SERVO_CH_1/2/3 或底层 TIM_CHANNEL_x
   * @param  angle   角度, 0 ~ 270 度(超限自动钳位, 负值钳到 0)
   *                 0°→500µs, 135°→1500µs(中位), 270°→2500µs
   */
@@ -101,11 +117,10 @@ void Servo_SetAngle_270(uint32_t channel, int16_t angle)
 {
   int32_t offset;
   uint32_t pulse_us;
+  uint8_t idx = Servo_ChannelToIndex(channel);
 
   /* 非法通道直接返回 */
-  if (channel != TIM_CHANNEL_1 &&
-      channel != TIM_CHANNEL_2 &&
-      channel != TIM_CHANNEL_3)
+  if (idx >= 3U)
   {
     return;
   }
@@ -118,6 +133,5 @@ void Servo_SetAngle_270(uint32_t channel, int16_t angle)
   offset   = (int32_t)angle * ((int32_t)SERVO_MAX_US - (int32_t)SERVO_MIN_US) / SERVO_ANGLE_270_MAX;
   pulse_us = (uint32_t)((int32_t)SERVO_MIN_US + offset);
 
-  /* TIM_CHANNEL_x = (x-1)*4, >>2 即通道下标(HAL 的 CCR 索引同款约定) */
-  PWM_Channel_SetPulse(&s_servo_ch[channel >> 2], pulse_us);
+  PWM_Channel_SetPulse(&s_servo_ch[idx], pulse_us);
 }

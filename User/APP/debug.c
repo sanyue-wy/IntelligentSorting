@@ -482,7 +482,8 @@ static void Debug_ServoSetAndCheck(int16_t angle)
   */
 static uint32_t Debug_GripReadPulseUs(uint32_t channel)
 {
-  uint32_t ticks  = __HAL_TIM_GET_COMPARE(&htim1, channel);
+  uint32_t hw_ch  = Servo_GetHwChannel((ServoChannel_e)channel);
+  uint32_t ticks  = __HAL_TIM_GET_COMPARE(&htim1, hw_ch);
   uint32_t period = __HAL_TIM_GET_AUTORELOAD(&htim1) + 1U;
 
   if (period <= 1U)
@@ -526,7 +527,7 @@ static uint8_t Debug_GripPulseOk(const char *tag, uint32_t channel, uint16_t deg
   {
     UART_Port_Printf(&uart1_port,
                      "[grip] [FAIL] %s: ch%lu deg=%u exp=%ldus act=%ldus\r\n",
-                     tag, (unsigned long)(channel >> 2), (unsigned)deg,
+                     tag, (unsigned long)(channel + 1U), (unsigned)deg,
                      (long)exp, (long)act);
   }
   return ok;
@@ -604,7 +605,8 @@ static void StorageTest_Status(const char *tag)
   */
 static uint32_t Debug_TrayReadPulseUs(uint32_t channel)
 {
-  uint32_t ticks  = __HAL_TIM_GET_COMPARE(&htim1, channel);
+  uint32_t hw_ch  = Servo_GetHwChannel((ServoChannel_e)channel);
+  uint32_t ticks  = __HAL_TIM_GET_COMPARE(&htim1, hw_ch);
   uint32_t period = __HAL_TIM_GET_AUTORELOAD(&htim1) + 1U;
 
   if (period <= 1U)
@@ -771,6 +773,110 @@ static void HostTest_Send(uint8_t flags, int32_t x_um, int32_t y_um,
 }
 #endif
 
+#if msgcenter_debug==1
+static uint32_t s_mc_pass_cnt = 0;
+static uint32_t s_mc_fail_cnt = 0;
+
+static void MC_Test_Assert(const char *name, uint8_t condition)
+{
+    if (condition)
+    {
+        s_mc_pass_cnt++;
+        UART_Port_Printf(&uart1_port, "[msgcenter] %s -> [PASS]\r\n", name);
+    }
+    else
+    {
+        s_mc_fail_cnt++;
+        UART_Port_Printf(&uart1_port, "[msgcenter] %s -> [FAIL]\r\n", name);
+    }
+}
+
+static void Debug_MsgCenter_Init(void)
+{
+    UART_Port_Printf(&uart1_port, "\r\n[msgcenter] === Message Center Unit Tests Begin ===\r\n");
+    s_mc_pass_cnt = 0;
+    s_mc_fail_cnt = 0;
+
+    /* TC1: 参数有效性边界 */
+    uint8_t tc1_ok = (PubRegister(NULL, 4) == NULL) &&
+                     (PubRegister("tc1_zero_len", 0) == NULL) &&
+                     (PubRegister("tc1_name_over_32_bytes_limit_01234567890", 4) == NULL) &&
+                     (SubRegister(NULL, 4) == NULL);
+    MC_Test_Assert("TC1: Parameter Validation (NULL/0/overflow)", tc1_ok);
+
+    /* TC2: 订阅先于发布注册的时序解耦 */
+    Subscriber_t *sub_tc2 = SubRegister("tc2_order", sizeof(uint32_t));
+    Publisher_t  *pub_tc2 = PubRegister("tc2_order", sizeof(uint32_t));
+    Publisher_t  *pub_tc2_mismatch = PubRegister("tc2_order", sizeof(uint16_t));
+    uint8_t tc2_ok = (sub_tc2 != NULL) && (pub_tc2 != NULL) &&
+                     (pub_tc2->pub_registered_flag == 1) &&
+                     (pub_tc2_mismatch == NULL);
+    MC_Test_Assert("TC2: Registration Sequence & Len Check", tc2_ok);
+
+    /* TC3: 基础 1 对 1 收发与数据正确性 */
+    Publisher_t  *pub_tc3 = PubRegister("tc3_1to1", sizeof(uint32_t));
+    Subscriber_t *sub_tc3 = SubRegister("tc3_1to1", sizeof(uint32_t));
+    uint32_t tx_val3 = 0x12345678U;
+    uint32_t rx_val3 = 0U;
+    uint8_t push3_ok = PubPushMessage(pub_tc3, &tx_val3);
+    uint8_t get3_ok1 = SubGetMessage(sub_tc3, &rx_val3);
+    uint8_t get3_ok2 = SubGetMessage(sub_tc3, &rx_val3); /* 再次出队应为空 */
+    uint8_t tc3_ok = (push3_ok == 1) && (get3_ok1 == 1) && (rx_val3 == tx_val3) && (get3_ok2 == 0);
+    MC_Test_Assert("TC3: Single Topic 1-to-1 Pub/Sub", tc3_ok);
+
+    /* TC4: 1 对多广播 (2 个订阅者独立出队) */
+    Publisher_t  *pub_tc4 = PubRegister("tc4_broadcast", sizeof(uint16_t));
+    Subscriber_t *sub_tc4_a = SubRegister("tc4_broadcast", sizeof(uint16_t));
+    Subscriber_t *sub_tc4_b = SubRegister("tc4_broadcast", sizeof(uint16_t));
+    uint16_t tx_val4 = 0xABCDU;
+    uint16_t rx_val4_a = 0U, rx_val4_b = 0U;
+    uint8_t push4_cnt = PubPushMessage(pub_tc4, &tx_val4);
+    uint8_t get4_a = SubGetMessage(sub_tc4_a, &rx_val4_a);
+    uint8_t get4_b = SubGetMessage(sub_tc4_b, &rx_val4_b);
+    uint8_t tc4_ok = (push4_cnt == 2) && (get4_a == 1) && (get4_b == 1) &&
+                     (rx_val4_a == tx_val4) && (rx_val4_b == tx_val4);
+    MC_Test_Assert("TC4: 1-to-Many Broadcasting", tc4_ok);
+
+    /* TC5: 多话题数据隔离性 */
+    Publisher_t  *pub_tc5_x = PubRegister("tc5_topic_x", sizeof(uint8_t));
+    Publisher_t  *pub_tc5_y = PubRegister("tc5_topic_y", sizeof(uint8_t));
+    Subscriber_t *sub_tc5_x = SubRegister("tc5_topic_x", sizeof(uint8_t));
+    Subscriber_t *sub_tc5_y = SubRegister("tc5_topic_y", sizeof(uint8_t));
+    uint8_t tx_x = 0x55U, tx_y = 0xAAU;
+    uint8_t rx_x = 0U, rx_y = 0U;
+    PubPushMessage(pub_tc5_x, &tx_x);
+    PubPushMessage(pub_tc5_y, &tx_y);
+    SubGetMessage(sub_tc5_x, &rx_x);
+    SubGetMessage(sub_tc5_y, &rx_y);
+    uint8_t tc5_ok = (rx_x == 0x55U) && (rx_y == 0xAAU);
+    MC_Test_Assert("TC5: Multi-Topic Data Isolation", tc5_ok);
+
+    /* TC6: 满队覆盖策略 (FIFO Overwrite, 队列深度=1时覆盖前值保留最新值) */
+    Publisher_t  *pub_tc6 = PubRegister("tc6_overwrite", sizeof(uint32_t));
+    Subscriber_t *sub_tc6 = SubRegister("tc6_overwrite", sizeof(uint32_t));
+    uint32_t v6_first = 0x11111111U;
+    uint32_t v6_second = 0x22222222U;
+    uint32_t rx_v6 = 0U;
+    PubPushMessage(pub_tc6, &v6_first);
+    PubPushMessage(pub_tc6, &v6_second);
+    uint8_t get6_ok = SubGetMessage(sub_tc6, &rx_v6);
+    uint8_t get6_empty = SubGetMessage(sub_tc6, &rx_v6);
+    uint8_t tc6_ok = (get6_ok == 1) && (rx_v6 == v6_second) && (get6_empty == 0);
+    MC_Test_Assert("TC6: FIFO Overwrite Latest Message", tc6_ok);
+
+    /* TC7: 空队列读取边界安全 */
+    Subscriber_t *sub_tc7 = SubRegister("tc7_empty", sizeof(uint32_t));
+    uint32_t rx_v7 = 0x99999999U;
+    uint8_t get7_ok = SubGetMessage(sub_tc7, &rx_v7);
+    uint8_t tc7_ok = (get7_ok == 0) && (rx_v7 == 0x99999999U);
+    MC_Test_Assert("TC7: Empty Queue Read Boundary", tc7_ok);
+
+    UART_Port_Printf(&uart1_port,
+                     "[msgcenter] === Unit Tests Finished: %lu PASS, %lu FAIL ===\r\n\r\n",
+                     (unsigned long)s_mc_pass_cnt, (unsigned long)s_mc_fail_cnt);
+}
+#endif
+
 void debug_init(void)
 {
     /* ---- 公共底层: 所有层都依赖, 无条件接入 ---- */
@@ -882,7 +988,7 @@ void debug_init(void)
     s_gt_err   = 0U;
     UART_Port_Printf(&uart1_port,
                      "[grip] init ok: z=ch%u jaw=ch%u | test: Z down/up + jaw open/close(100%%->0%%) + clamp\r\n",
-                     (unsigned)(GRIP_Z_SERVO_CH >> 2), (unsigned)(GRIP_JAW_SERVO_CH >> 2));
+                     (unsigned)(GRIP_Z_SERVO_CH + 1U), (unsigned)(GRIP_JAW_SERVO_CH + 1U));
 #endif
 
 #if storage_debug==1
@@ -920,8 +1026,12 @@ void debug_init(void)
     s_tt_err   = 0U;
     UART_Port_Printf(&uart1_port,
                      "[tray] init ok: ch%u home=%u deg, range %u~%u | test: sweep 0~270 + rel + clamp\r\n",
-                     (unsigned)(TRAY_SERVO_CH >> 2), (unsigned)TRAY_HOME_DEG,
+                     (unsigned)(TRAY_SERVO_CH + 1U), (unsigned)TRAY_HOME_DEG,
                      (unsigned)TRAY_MIN_DEG, (unsigned)TRAY_MAX_DEG);
+#endif
+
+#if msgcenter_debug==1
+    Debug_MsgCenter_Init();
 #endif
 }
 
@@ -931,7 +1041,7 @@ void debug_run(void)
     uint32_t now = HAL_GetTick();
 #if uart_debug==0 && can_debug==0 && usb_debug==0 && vofa_debug==0 \
     && stepmotor_debug==0 && dji_motor_debug==0 && servo_debug==0 && grip_debug==0 \
-    && storage_debug==0 && tray_debug==0 && motion_debug==0 && host_debug==0
+    && storage_debug==0 && tray_debug==0 && motion_debug==0 && host_debug==0 && msgcenter_debug==0
     (void)now; /* 所有层都关闭时消 unused 警告 */
 #endif
 
@@ -2368,5 +2478,18 @@ sg_step:
         }
     }
 #endif
+#endif
+
+#if msgcenter_debug==1
+    {
+        static uint32_t s_last_mc = 0;
+        if (now - s_last_mc >= 1000U)
+        {
+            s_last_mc = now;
+            UART_Port_Printf(&uart1_port,
+                             "[msgcenter] loop heartbeat | pass=%lu fail=%lu\r\n",
+                             (unsigned long)s_mc_pass_cnt, (unsigned long)s_mc_fail_cnt);
+        }
+    }
 #endif
 }

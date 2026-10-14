@@ -57,6 +57,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     User/Device/servo/servo.c
      User/Middleware/Driver/drv_uart.c
     User/Middleware/Driver/drv_pwm.c
+    User/APP/app.c
     User/APP/debug.c
     User/APP/task_it.c
     User/Module/Motion_SYS_XY/motion_sys_XY.c
@@ -64,6 +65,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     User/Module/Grip/grip.c
     User/Module/StorageTray/storage.c
     User/Module/Tray/tray.c
+    User/Module/MessageCenter/messagecenter.c
    User/Middleware/Driver/drv_tim.c
 )
 
@@ -83,6 +85,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     User/Module/Grip
     User/Module/StorageTray
     User/Module/Tray
+    User/Module/MessageCenter
 )
 
 # Add project symbols (macros)

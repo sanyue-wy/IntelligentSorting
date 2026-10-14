@@ -15,6 +15,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "tray.h"
 #include "servo.h"
+#include "drv_tim.h"
 
 /* ========================================================================== */
 /*  私有变量                                                                   */
@@ -35,7 +36,7 @@ static uint32_t s_busy_until; /* 动作完成时刻(HAL_GetTick 口径)         
   */
 static void Tray_AgeBusy(void)
 {
-  uint32_t now = HAL_GetTick();
+  uint32_t now = SysTime_GetMs();
 
   if (s_busy && ((int32_t)(now - s_busy_until) >= 0))
   {
@@ -60,7 +61,7 @@ static uint16_t Tray_Clamp(uint16_t deg)
 /* 起一次动作计时: 时长随转角增大(见 tray.h 说明) */
 static void Tray_ArmTimer(uint16_t delta_deg)
 {
-  s_busy_until = HAL_GetTick() + Tray_MoveDurationMs(delta_deg);
+  s_busy_until = SysTime_GetMs() + Tray_MoveDurationMs(delta_deg);
   s_busy       = 1U;
 }
 

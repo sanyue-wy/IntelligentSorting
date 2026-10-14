@@ -195,6 +195,9 @@ static HostCommStats_t s_stats;
 /* ---- 首次运动诊断(一次性, 结构体见 host_comm.h HostDiag_t) ---- */
 static volatile HostDiag_t s_diag;
 
+/* ---- 业务层命令钩子 ---- */
+static HostCmdHook_fn s_cmd_hook = NULL;
+
 /* ========================================================================== */
 /*  私有辅助                                                                   */
 /* ========================================================================== */
@@ -302,12 +305,12 @@ static uint8_t HostComm_F1Ensure(void)
   {
     uint32_t n0 = StepMotor_ZDT[0].f1_count;
     uint32_t n1 = StepMotor_ZDT[1].f1_count;
-    uint32_t t0 = HAL_GetTick();
+    uint32_t t0 = SysTime_GetMs();
 
     Emm_V5_Set_QPos_Params(MS_XY_MOTOR_A_ADDR, MS_XY_QPOS_VEL_RPM, MS_XY_QPOS_ACC, 1U, false);
     Emm_V5_Set_QPos_Params(MS_XY_MOTOR_B_ADDR, MS_XY_QPOS_VEL_RPM, MS_XY_QPOS_ACC, 1U, false);
 
-    while ((HAL_GetTick() - t0) < HOST_F1_WAIT_MS)
+    while ((SysTime_GetMs() - t0) < HOST_F1_WAIT_MS)
     {
       if (StepMotor_ZDT[0].f1_count != n0 && StepMotor_ZDT[1].f1_count != n1)
       {
@@ -416,6 +419,20 @@ static void Host_EstopApply(void)
   */
 static void HostComm_Dispatch(const HostCmd_t *cmd, uint32_t now)
 {
+  /* --- 若业务层注册了接管钩子, 优先由业务层处理 --- */
+  if (s_cmd_hook != NULL)
+  {
+    if ((cmd->flags & (HOST_FLAG_MOTION | HOST_FLAG_GRIP | HOST_FLAG_PERMIT)) &&
+        (!s_job_active || cmd->task_id != s_job_task))
+    {
+      HostJob_Reset(cmd->task_id);
+    }
+    if (s_cmd_hook(cmd))
+    {
+      return;
+    }
+  }
+
   /* --- bit3 清报警: 清 ERROR+急停锁存, FAULT 复位, 回到待机 --- */
   if (cmd->flags & HOST_FLAG_CLEAR)
   {
@@ -726,7 +743,7 @@ void HostComm_Init(void)
 
 void HostComm_Tick(void)
 {
-  uint32_t now = HAL_GetTick();
+  uint32_t now = SysTime_GetMs();
 
   if (!s_inited)
   {
@@ -752,7 +769,7 @@ void HostComm_Tick(void)
 
 void HostComm_Poll(void)
 {
-  uint32_t now = HAL_GetTick();
+  uint32_t now = SysTime_GetMs();
   uint8_t state, grip;
   uint16_t error, ack;
   uint32_t task;
@@ -1094,7 +1111,7 @@ static void HostComm_OnFrame(const uint8_t *f)
   {
     s_stats.rx_dup++;
 #if (HOST_LINK_TIMEOUT_MS > 0U)
-    s_last_rx_tick = HAL_GetTick();
+    s_last_rx_tick = SysTime_GetMs();
 #endif
     return;
   }
@@ -1131,6 +1148,164 @@ static void HostComm_OnFrame(const uint8_t *f)
   s_seq_valid = 1U;
   s_stats.rx_frames++;
 #if (HOST_LINK_TIMEOUT_MS > 0U)
-  s_last_rx_tick = HAL_GetTick();
+  s_last_rx_tick = SysTime_GetMs();
 #endif
 }
+
+/* ========================================================================== */
+/*  业务层 (app.c) 协同接口实现                                                 */
+/* ========================================================================== */
+
+void HostComm_RegisterCmdHook(HostCmdHook_fn hook)
+{
+  s_cmd_hook = hook;
+}
+
+void HostComm_ReportSuccess(void)
+{
+  HostRes_EmitSuccess();
+}
+
+void HostComm_ReportFail(uint8_t stage, uint16_t err)
+{
+  if (err != 0U)
+  {
+    Host_ErrSet(err);
+  }
+  HostRes_EmitFail(stage);
+}
+
+void HostComm_ReportAbort(uint8_t stage)
+{
+  HostRes_EmitAbort(stage);
+}
+
+/* ========================================================================== */
+/*  上位机通用封包/解包便捷工具实现                                            */
+/* ========================================================================== */
+
+void HostComm_PackCmd(uint8_t out_frame[HOST_FRAME_LEN], const HostCmd_t *cmd)
+{
+  if (out_frame == NULL || cmd == NULL)
+  {
+    return;
+  }
+
+  memset(out_frame, 0, HOST_FRAME_LEN);
+  out_frame[0] = HOST_SOF0;
+  out_frame[1] = HOST_SOF1;
+  out_frame[2] = HOST_VER;
+  out_frame[3] = HOST_TYPE_CMD;
+  out_frame[4] = cmd->flags;
+
+  H_PutU16(&out_frame[5], cmd->seq);
+  H_PutU32(&out_frame[7], cmd->task_id);
+  H_PutI32(&out_frame[11], cmd->x_um);
+  H_PutI32(&out_frame[15], cmd->y_um);
+
+  out_frame[19] = cmd->grip_cmd;
+  H_PutU16(&out_frame[20], cmd->timeout_ms);
+}
+
+bool HostComm_UnpackStatus(const uint8_t in_frame[HOST_FRAME_LEN], HostStatus_t *out_status)
+{
+  if (in_frame == NULL || out_status == NULL)
+  {
+    return false;
+  }
+
+  if (in_frame[0] != HOST_SOF0 || in_frame[1] != HOST_SOF1 ||
+      in_frame[2] != HOST_VER || in_frame[3] != HOST_TYPE_STATUS)
+  {
+    return false;
+  }
+
+  out_status->flags     = in_frame[4];
+  out_status->seq       = H_GetU16(&in_frame[5]);
+  out_status->task_id   = H_GetU32(&in_frame[7]);
+  out_status->cur_x_um  = (int32_t)H_GetU32(&in_frame[11]);
+  out_status->cur_y_um  = (int32_t)H_GetU32(&in_frame[15]);
+  out_status->cur_x_mm  = (float)out_status->cur_x_um * 0.001f;
+  out_status->cur_y_mm  = (float)out_status->cur_y_um * 0.001f;
+  out_status->state     = in_frame[19];
+  out_status->gripper   = in_frame[20];
+  out_status->error     = H_GetU16(&in_frame[21]);
+  out_status->ack_seq   = H_GetU16(&in_frame[23]);
+  out_status->progress  = in_frame[25];
+  out_status->res_flags = in_frame[26];
+  out_status->res_stage = in_frame[27];
+
+  return true;
+}
+
+void HostComm_BuildMoveCmd(uint8_t out_frame[HOST_FRAME_LEN], uint16_t seq, uint32_t task_id,
+                           float x_mm, float y_mm, uint16_t timeout_ms)
+{
+  HostCmd_t cmd;
+  cmd.seq        = seq;
+  cmd.task_id    = task_id;
+  cmd.flags      = HOST_FLAG_MOTION;
+  cmd.x_um       = (int32_t)(x_mm * 1000.0f + (x_mm >= 0.0f ? 0.5f : -0.5f));
+  cmd.y_um       = (int32_t)(y_mm * 1000.0f + (y_mm >= 0.0f ? 0.5f : -0.5f));
+  cmd.grip_cmd   = HOST_GRIP_HOLD;
+  cmd.timeout_ms = timeout_ms;
+
+  HostComm_PackCmd(out_frame, &cmd);
+}
+
+void HostComm_BuildPermitCmd(uint8_t out_frame[HOST_FRAME_LEN], uint16_t seq, uint32_t task_id)
+{
+  HostCmd_t cmd;
+  cmd.seq        = seq;
+  cmd.task_id    = task_id;
+  cmd.flags      = HOST_FLAG_PERMIT;
+  cmd.x_um       = 0;
+  cmd.y_um       = 0;
+  cmd.grip_cmd   = HOST_GRIP_HOLD;
+  cmd.timeout_ms = 0;
+
+  HostComm_PackCmd(out_frame, &cmd);
+}
+
+void HostComm_BuildEstopCmd(uint8_t out_frame[HOST_FRAME_LEN], uint16_t seq)
+{
+  HostCmd_t cmd;
+  cmd.seq        = seq;
+  cmd.task_id    = 0;
+  cmd.flags      = HOST_FLAG_ESTOP;
+  cmd.x_um       = 0;
+  cmd.y_um       = 0;
+  cmd.grip_cmd   = HOST_GRIP_HOLD;
+  cmd.timeout_ms = 0;
+
+  HostComm_PackCmd(out_frame, &cmd);
+}
+
+void HostComm_BuildClearCmd(uint8_t out_frame[HOST_FRAME_LEN], uint16_t seq)
+{
+  HostCmd_t cmd;
+  cmd.seq        = seq;
+  cmd.task_id    = 0;
+  cmd.flags      = HOST_FLAG_CLEAR;
+  cmd.x_um       = 0;
+  cmd.y_um       = 0;
+  cmd.grip_cmd   = HOST_GRIP_HOLD;
+  cmd.timeout_ms = 0;
+
+  HostComm_PackCmd(out_frame, &cmd);
+}
+
+void HostComm_BuildCancelCmd(uint8_t out_frame[HOST_FRAME_LEN], uint16_t seq, uint32_t task_id)
+{
+  HostCmd_t cmd;
+  cmd.seq        = seq;
+  cmd.task_id    = task_id;
+  cmd.flags      = HOST_FLAG_CANCEL;
+  cmd.x_um       = 0;
+  cmd.y_um       = 0;
+  cmd.grip_cmd   = HOST_GRIP_HOLD;
+  cmd.timeout_ms = 0;
+
+  HostComm_PackCmd(out_frame, &cmd);
+}
+

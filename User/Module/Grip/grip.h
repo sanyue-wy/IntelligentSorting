@@ -32,14 +32,14 @@ extern "C" {
 /* Includes ------------------------------------------------------------------*/
 #include <stdbool.h>
 #include <stdint.h>
-#include "tim.h"           /* TIM_CHANNEL_1 ~ TIM_CHANNEL_3 */
+#include "servo.h"
 
 /* ========================================================================== */
 /*  通道映射 (舵机1 / 舵机2; 按接线改, 其它层只认这里的名字)                    */
 /* ========================================================================== */
 
-#define GRIP_Z_SERVO_CH    TIM_CHANNEL_1 /* 舵机1: Z 轴升降 (TIM1_CH1 / PE9)  */
-#define GRIP_JAW_SERVO_CH  TIM_CHANNEL_2 /* 舵机2: 夹爪开合 (TIM1_CH2 / PE11) */
+#define GRIP_Z_SERVO_CH    SERVO_CH_1 /* 舵机1: Z 轴升降 (TIM1_CH1 / PE9)  */
+#define GRIP_JAW_SERVO_CH  SERVO_CH_2 /* 舵机2: 夹爪开合 (TIM1_CH2 / PE11) */
 
 /* ========================================================================== */
 /*  机构行程 (0~270° 舵机; 角度方向按机械安装改)                                */
