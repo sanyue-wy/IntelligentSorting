@@ -596,7 +596,7 @@ bool App_OnHostCommand(const HostCmd_t *cmd)
 void App_TriggerEStop(void)
 {
     s_app.estop_latched = true;
-    MotionSys_XY_Stop();
+    MotionSys_XY_Stop(); /* 内部自动清空 CAN 发送队列与撤回硬件邮箱滞留帧 */
 #if (APP_DEBUG_PRINT == 1)
     UART_Port_Printf(&uart1_port, "[app] [ESTOP] Emergency stop latched!\r\n");
 #endif
@@ -642,7 +642,20 @@ bool App_DetectForeignObject(void)
 
     if (s_app.foreign_hook != NULL)
     {
-        return s_app.foreign_hook();
+        static uint8_t s_detect_cnt = 0;
+        if (s_app.foreign_hook())
+        {
+            if (++s_detect_cnt >= 3U)
+            {
+                s_detect_cnt = 3U;
+                return true;
+            }
+        }
+        else
+        {
+            s_detect_cnt = 0U;
+        }
+        return false;
     }
 
     /* 硬件默认无异物阻碍 */
@@ -657,7 +670,20 @@ bool App_CheckGripSuccess(void)
 
     if (s_app.grasp_hook != NULL)
     {
-        return s_app.grasp_hook();
+        static uint8_t s_grasp_cnt = 0;
+        if (s_app.grasp_hook())
+        {
+            if (++s_grasp_cnt >= 3U)
+            {
+                s_grasp_cnt = 3U;
+                return true;
+            }
+        }
+        else
+        {
+            s_grasp_cnt = 0U;
+        }
+        return false;
     }
 
     /* 硬件未接力敏/光电微动时, 闭环动作到位即判定抓取成功 */

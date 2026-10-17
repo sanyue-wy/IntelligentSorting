@@ -99,6 +99,7 @@ typedef struct
   int16_t  speed;        /* 实时转速(有符号) */
   int16_t  current;      /* 实时电流(有符号) */
   int32_t  round_count;  /* 累计圈数(跨 8192 翻转累加) */
+  int64_t  total_ecd;    /* 64位无损累计编码器脉冲数 (防长期连续旋转 float 有效位丢失) */
   float    total_angle;  /* 折算后的总角度(度, 已除减速比) */
   uint16_t offset_angle; /* 上电时的角度偏移 */
   uint16_t no_rx_count;  /* 连续未收到帧计数 */

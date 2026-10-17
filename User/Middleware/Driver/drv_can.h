@@ -133,6 +133,7 @@ uint8_t *CAN_Bus_GetTxBuffer(CAN_BusObject *bus, uint16_t std_id);
 uint8_t  CAN_Bus_ConfigFilter(CAN_BusObject *bus, uint32_t filter_bank, uint32_t fifo,
                               uint32_t std_id, uint32_t mask_id);
 void     CAN_Bus_PumpTxQueue(CAN_BusObject *bus);
+void     CAN_Bus_ClearTxQueue(CAN_BusObject *bus);
 void     CAN_Bus_Tick(void);
 
 #ifdef __cplusplus

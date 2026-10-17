@@ -10,6 +10,8 @@
 #include "drv_uart.h"
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdbool.h>
+#include "cmsis_os2.h"
 
 /* Private macros ------------------------------------------------------------*/
 
@@ -195,36 +197,71 @@ uint8_t UART_Port_TxBusy(UART_PortObject *port)
   * @note   阻塞发送, 只能在主循环/线程上下文调用, 不要在中断里调用;
   *         内部使用共享静态缓冲, 不可多上下文并发调用
   */
+static osMutexId_t s_print_mutex = NULL;
+
 int UART_Port_Printf(UART_PortObject *port, const char *fmt, ...)
 {
   va_list ap;
   int ret;
+  bool have_mutex = false;
+  uint32_t primask = 0U;
 
   if (port == NULL || port->huart == NULL || fmt == NULL)
   {
     return -1;
   }
 
+  /* RTOS 运行时使用互斥量保护静态缓冲区, 避免多任务并发打印踩踏 */
+  if (osKernelGetState() == osKernelRunning)
+  {
+    if (s_print_mutex == NULL)
+    {
+      const osMutexAttr_t attr = { .name = "PrintMutex" };
+      s_print_mutex = osMutexNew(&attr);
+    }
+    if (s_print_mutex != NULL && osMutexAcquire(s_print_mutex, 50U) == osOK)
+    {
+      have_mutex = true;
+    }
+  }
+
+  if (!have_mutex)
+  {
+    primask = __get_PRIMASK();
+    __disable_irq();
+  }
+
   va_start(ap, fmt);
-  ret = vsnprintf(s_print_buf, sizeof(s_print_buf), fmt, ap); /* 有界, 修掉参考实现的 vsprintf 溢出隐患 */
+  ret = vsnprintf(s_print_buf, sizeof(s_print_buf), fmt, ap);
   va_end(ap);
 
-  if (ret < 0)
+  if (ret >= 0)
   {
-    return -1;
-  }
-  if ((size_t)ret >= sizeof(s_print_buf))
-  {
-    ret = (int)sizeof(s_print_buf) - 1; /* 超长截断 */
+    if ((size_t)ret >= sizeof(s_print_buf))
+    {
+      ret = (int)sizeof(s_print_buf) - 1; /* 超长截断 */
+    }
+
+    if (HAL_UART_Transmit(port->huart, (uint8_t *)s_print_buf, (uint16_t)ret, 100U) != HAL_OK)
+    {
+      port->stats.tx_error++;
+      ret = -1;
+    }
+    else
+    {
+      port->stats.tx_count++;
+    }
   }
 
-  if (HAL_UART_Transmit(port->huart, (uint8_t *)s_print_buf, (uint16_t)ret, HAL_MAX_DELAY) != HAL_OK)
+  if (have_mutex)
   {
-    port->stats.tx_error++;
-    return -1;
+    (void)osMutexRelease(s_print_mutex);
+  }
+  else
+  {
+    __set_PRIMASK(primask);
   }
 
-  port->stats.tx_count++;
   return ret;
 }
 

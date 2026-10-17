@@ -258,6 +258,30 @@ void CAN_Bus_PumpTxQueue(CAN_BusObject *bus)
 }
 
 /**
+  * @brief  清空发送队列并撤回硬件邮箱中的挂起发送 (急停/限位防撞用)
+  * @param  bus 总线对象
+  */
+void CAN_Bus_ClearTxQueue(CAN_BusObject *bus)
+{
+  if (bus == NULL || bus->hcan == NULL)
+  {
+    return;
+  }
+
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
+
+  bus->tx_queue.head  = 0U;
+  bus->tx_queue.tail  = 0U;
+  bus->tx_queue.count = 0U;
+
+  /* 中止硬件 3 个邮箱中尚未发出的报文, 防止滞留帧继续驱动电机 */
+  (void)HAL_CAN_AbortTxRequest(bus->hcan, CAN_TX_MAILBOX0 | CAN_TX_MAILBOX1 | CAN_TX_MAILBOX2);
+
+  __set_PRIMASK(primask);
+}
+
+/**
   * @brief  发送一帧标准数据帧(优先硬件邮箱直发, 邮箱满则入队缓冲)
   * @param  bus    总线对象
   * @param  std_id 标准帧 ID (0x000~0x7FF)

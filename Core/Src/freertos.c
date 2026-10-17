@@ -189,5 +189,19 @@ void StartTelemetryTask(void *argument)
   }
 }
 
+/**
+  * @brief  FreeRTOS 栈溢出保护钩子
+  */
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+  (void)xTask;
+  (void)pcTaskName;
+  __disable_irq();
+  for (;;)
+  {
+    /* 硬件级死锁挂起, 防止破坏相邻内存 */
+  }
+}
+
 /* USER CODE END Application */
 

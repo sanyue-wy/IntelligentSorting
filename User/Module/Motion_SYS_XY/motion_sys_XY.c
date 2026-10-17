@@ -553,7 +553,8 @@ void MotionSys_XY_Stop(void)
   s_idle_enter_tick = SysTime_GetMs();
   __set_PRIMASK(primask);
 
-  /* 双电机立即停止(主循环上下文, 独立静态缓冲, 与 Tick 的 QPos 不冲突) */
+  /* 双电机立即停止: 先清空总线发送队列与邮箱残留, 防止滞留帧继续驱动电机 */
+  CAN_Bus_ClearTxQueue(&can1_bus);
   StepMotor_Stop(&StepMotor_ZDT[0]);
   StepMotor_Stop(&StepMotor_ZDT[1]);
 }

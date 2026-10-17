@@ -13,8 +13,8 @@
 
 #define DJ_MOTOR_BUS (&can1_bus) /* 挂载的 CAN 总线对象 */
 
-/* 连续 DJ_RX_TIMEOUT 拍未收到反馈帧判定为通信丢失(≈100×调用周期≈300ms@3ms) */
-#define DJ_RX_TIMEOUT 100U
+/* 连续未收到反馈帧判定为通信丢失(20×3ms=60ms@3ms 调用周期, 及时保护防飞车) */
+#define DJ_RX_TIMEOUT 20U
 
 /* 电机 ID 地址: 0x1FF = 高4路电流帧, 0x200 = 低4路电流帧, 0x201~0x208 = 反馈帧 */
 enum CAN_Motor_ID
@@ -115,22 +115,26 @@ static void DJ_CAN_Callback(CAN_BusObject *bus, CAN_RxHeaderTypeDef *header, uin
       Motors[i]->rx_once       = 1;
       Motors[i]->offset_angle  = Motors[i]->angle;
       Motors[i]->round_count   = 0;
+      Motors[i]->total_ecd     = 0LL;
       Motors[i]->total_angle   = 0.0f;
       break;
     }
 
     /* 跨 8192 翻转累加圈数 */
-    if ((int16_t)(Motors[i]->angle - Motors[i]->last_angle) > 4096)
+    int16_t diff = (int16_t)(Motors[i]->angle - Motors[i]->last_angle);
+    if (diff > 4096)
     {
       Motors[i]->round_count--;
     }
-    else if ((int16_t)(Motors[i]->angle - Motors[i]->last_angle) < -4096)
+    else if (diff < -4096)
     {
       Motors[i]->round_count++;
     }
-    Motors[i]->total_angle = (Motors[i]->round_count +
-                              ((int32_t)Motors[i]->angle - (int32_t)Motors[i]->offset_angle) / 8192.0f) *
-                             360.0f / (float)Motors[i]->dec;
+
+    /* 64 位无损整型编码器脉冲累加 (防长期同向旋转 float 有效位损失) */
+    Motors[i]->total_ecd = (int64_t)Motors[i]->round_count * 8192LL +
+                           (int64_t)((int32_t)Motors[i]->angle - (int32_t)Motors[i]->offset_angle);
+    Motors[i]->total_angle = (float)Motors[i]->total_ecd * (360.0f / (8192.0f * (float)Motors[i]->dec));
     break;
   }
   default:
@@ -319,6 +323,7 @@ void DJ_ClearAngle(DJ_Motor_t *motor)
   motor->offset_angle = motor->angle;
   motor->last_angle   = motor->angle;
   motor->round_count  = 0;
+  motor->total_ecd    = 0LL;
   motor->total_angle  = 0.0f;
   __set_PRIMASK(primask);
 }
