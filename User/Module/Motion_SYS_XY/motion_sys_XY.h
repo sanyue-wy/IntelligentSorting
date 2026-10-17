@@ -48,6 +48,15 @@ extern "C" {
                                      (直角弯道允许通过的速度, 无经典 jerk 项)   */
 
 /* ========================================================================== */
+/*  坐标分辨率与定位精度配置 (0.1mm 笛卡尔坐标分辨率)                           */
+/* ========================================================================== */
+
+#define MS_XY_RESOLUTION_MM        0.1f   /* XY 笛卡尔坐标分辨率网格: 0.1mm */
+#define MS_XY_ARRIVE_TOLERANCE_MM  0.1f   /* 物理实际到位判定容差: 0.1mm */
+/* 0.1mm 对应的电机微步脉冲数: 80 pulses/mm * 0.1mm = 8 pulses (整脉冲, 零截断误差) */
+#define MS_XY_PULSES_PER_RES_UNIT  8U
+
+/* ========================================================================== */
 /*  机械参数 (GT2 20齿同步轮直驱, 无减速比)                                     */
 /* ========================================================================== */
 
@@ -167,8 +176,17 @@ void MotionSys_XY_Stop(void);
   */
 void MotionSys_XY_Tick(void);
 
-/* 是否正在运动(RUNNING) */
+/* 是否正在运动(含实际物理到位判定) */
 bool MotionSys_XY_IsBusy(void);
+
+/**
+  * @brief  判定实际物理位置是否已到达目标容差范围内 (默认容差 MS_XY_ARRIVE_TOLERANCE_MM = 0.1mm)
+  * @param  target_x: 目标 X 坐标 (mm)
+  * @param  target_y: 目标 Y 坐标 (mm)
+  * @param  tolerance_mm: 允许容差 (mm), 传 <=0 则默认使用 0.1mm
+  * @retval true 已到位; false 仍有偏差
+  */
+bool MotionSys_XY_IsArrived(float target_x, float target_y, float tolerance_mm);
 
 /* 查询状态: IDLE / RUNNING / FAULT */
 MotionSys_XY_State_e MotionSys_XY_GetState(void);

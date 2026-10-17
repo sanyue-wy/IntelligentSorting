@@ -57,6 +57,27 @@ void PID_Init(PID_Controller_t *pid, float kp, float ki, float kd,
 }
 
 /**
+  * @brief  复位 PID 运行态
+  */
+void PID_Clear(PID_Controller_t *pid)
+{
+  if (pid == NULL)
+  {
+    return;
+  }
+  pid->ITerm       = 0.0f;
+  pid->Err         = 0.0f;
+  pid->Last_Err    = 0.0f;
+  pid->Last_Measure= 0.0f;
+  pid->Last_Output = 0.0f;
+  pid->Last_Dout   = 0.0f;
+  pid->Pout        = 0.0f;
+  pid->Dout        = 0.0f;
+  pid->Fout        = 0.0f;
+  pid->Output      = 0.0f;
+}
+
+/**
   * @brief  计算一步 PID
   * @param  pid     控制器实例
   * @param  measure 当前测量值

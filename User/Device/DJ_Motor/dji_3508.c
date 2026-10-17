@@ -53,6 +53,17 @@ void TDPID_Init(TDPID_t *c, float kp, float ki, float kd,
   c->pid.Improve |= PID_IMPROVE_INTEGRAL_LIMIT; /* 使 IntegralLimit 生效 */
 }
 
+void TDPID_Clear(TDPID_t *c)
+{
+  if (c == NULL)
+  {
+    return;
+  }
+  TD_Clear(&c->td);
+  PID_Clear(&c->pid);
+  c->out = 0.0f;
+}
+
 float TDPID_Calc(TDPID_t *c, float measure, float ref)
 {
   if (c == NULL)
@@ -118,7 +129,7 @@ static void DJ_CAN_Callback(CAN_BusObject *bus, CAN_RxHeaderTypeDef *header, uin
       Motors[i]->round_count++;
     }
     Motors[i]->total_angle = (Motors[i]->round_count +
-                              (Motors[i]->angle - Motors[i]->offset_angle) / 8192.0f) *
+                              ((int32_t)Motors[i]->angle - (int32_t)Motors[i]->offset_angle) / 8192.0f) *
                              360.0f / (float)Motors[i]->dec;
     break;
   }
@@ -213,11 +224,16 @@ void DJ_MotorRun(void)
     if (Motors[i]->no_rx_count < 65535)
       Motors[i]->no_rx_count++;
 
-    /* 反馈丢失保护: 超时则本拍电流归零并跳过控制计算,
-       避免冻结的反馈值让 PID 积分跑飞到饱和后持续输出满电流 */
+    /* 反馈丢失保护: 超时则本拍电流归零并重置 PID 积分,
+       避免断线重连后积分跑飞造成飞车 */
     if (Motors[i]->no_rx_count >= DJ_RX_TIMEOUT)
     {
       Motors[i]->setCurrent = 0;
+#if DJ_USE_PID
+      PID_Clear(&Motors[i]->PID_Speed);
+      PID_Clear(&Motors[i]->PID_SpeedOfAngle);
+      TDPID_Clear(&Motors[i]->PID_Angle);
+#endif
       continue;
     }
 
@@ -252,29 +268,37 @@ void DJ_MotorRun(void)
   }
 
   /* 控制电机电流 - 低 4 个电机 (ID 1-4) */
+  bool has_low = false;
   for (uint8_t i = 0; i < 4; i++)
   {
     int16_t current = 0;
     if (Motors[i] != NULL && Motors[i]->initialized)
+    {
       current = Motors[i]->setCurrent;
+      has_low = true;
+    }
     data[i * 2]     = (uint8_t)(current >> 8);
     data[i * 2 + 1] = (uint8_t)current;
   }
-  if (HAL_CAN_GetTxMailboxesFreeLevel(DJ_MOTOR_BUS->hcan) > 0)
+  if (has_low)
   {
     CAN_Bus_Send(DJ_MOTOR_BUS, DJ_L_ID, data, 8);
   }
 
-  /* 控制电机电流 - 高 4 个电机 (ID 5-8) */
+  /* 控制电机电流 - 高 4 个电机 (ID 5-8): 仅在存在 ID 5~8 时才发送, 避免浪费邮箱与总线带宽 */
+  bool has_high = false;
   for (uint8_t i = 4; i < 8; i++)
   {
     int16_t current = 0;
     if (Motors[i] != NULL && Motors[i]->initialized)
+    {
       current = Motors[i]->setCurrent;
+      has_high = true;
+    }
     data[(i - 4) * 2]     = (uint8_t)(current >> 8);
     data[(i - 4) * 2 + 1] = (uint8_t)current;
   }
-  if (HAL_CAN_GetTxMailboxesFreeLevel(DJ_MOTOR_BUS->hcan) > 0)
+  if (has_high)
   {
     CAN_Bus_Send(DJ_MOTOR_BUS, DJ_H_ID, data, 8);
   }

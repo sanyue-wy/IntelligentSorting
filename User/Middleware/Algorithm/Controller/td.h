@@ -47,6 +47,12 @@ typedef struct
 void TD_Init(TD_t *td, float r, float control_period);
 
 /**
+  * @brief  复位跟踪微分器运行态
+  * @param  td 实例
+  */
+void TD_Clear(TD_t *td);
+
+/**
   * @brief  计算一步跟踪
   * @param  td    实例
   * @param  input 本拍输入

@@ -28,6 +28,28 @@ extern "C" {
   */
 
 #define CAN_BUS_MAX_SUBSCRIPTIONS 8U /* 每条总线最多按 ID 订阅 8 个接收回调 */
+#define CAN_TX_FIFO_SIZE          32U /* 软件发送队列容量: 避免并发突发流量导致硬件邮箱满丢包 */
+
+/**
+  * @brief  发送队列帧项
+  */
+typedef struct
+{
+  CAN_TxHeaderTypeDef header;
+  uint8_t             data[8];
+} CAN_QueueFrame_t;
+
+/**
+  * @brief  软件发送队列 (环形 FIFO)
+  */
+typedef struct
+{
+  CAN_QueueFrame_t  fifo[CAN_TX_FIFO_SIZE];
+  volatile uint16_t head;
+  volatile uint16_t tail;
+  volatile uint16_t count;
+  volatile uint32_t drop_count;
+} CAN_TxQueue_t;
 
 /**
   * @brief  总线运行统计(中断上下文写入, 主循环读取)
@@ -38,6 +60,7 @@ typedef struct
   volatile uint32_t tx_count;  /* 成功发送帧数 */
   volatile uint32_t rx_error;  /* 接收(读 FIFO)失败次数 */
   volatile uint32_t tx_error;  /* 发送失败次数(邮箱满/总线未就绪) */
+  volatile uint32_t tx_drop;   /* 软件队列满丢弃帧数 */
   volatile uint32_t bus_error; /* HAL_CAN_ErrorCallback 触发次数 */
 } CAN_BusStats_t;
 
@@ -84,6 +107,7 @@ struct CAN_BusObject
   uint8_t                tx_frame_count; /* 帧表长度 */
   CAN_BusSubscription_t  subs[CAN_BUS_MAX_SUBSCRIPTIONS]; /* ID 订阅表 */
   uint8_t                sub_count;      /* 订阅表已用长度 */
+  CAN_TxQueue_t          tx_queue;       /* 软件发送队列 (防硬件邮箱占满丢包) */
   CAN_BusStats_t         stats;          /* 运行统计 */
 };
 
@@ -108,6 +132,7 @@ uint8_t  CAN_Bus_SendExt(CAN_BusObject *bus, uint32_t ext_id, uint8_t *data, uin
 uint8_t *CAN_Bus_GetTxBuffer(CAN_BusObject *bus, uint16_t std_id);
 uint8_t  CAN_Bus_ConfigFilter(CAN_BusObject *bus, uint32_t filter_bank, uint32_t fifo,
                               uint32_t std_id, uint32_t mask_id);
+void     CAN_Bus_PumpTxQueue(CAN_BusObject *bus);
 void     CAN_Bus_Tick(void);
 
 #ifdef __cplusplus

@@ -132,6 +132,7 @@ extern DJ_Motor_t DJ_Motor3508[3];
 /* ========================================================================== */
 void  TDPID_Init(TDPID_t *c, float kp, float ki, float kd,
                  float max_out, float max_iout, float control_period, float td_r);
+void  TDPID_Clear(TDPID_t *c);
 float TDPID_Calc(TDPID_t *c, float measure, float ref);
 
 /* ========================================================================== */

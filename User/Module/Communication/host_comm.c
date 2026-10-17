@@ -555,11 +555,11 @@ static void HostComm_Dispatch(const HostCmd_t *cmd, uint32_t now)
     }
   }
 
-  /* --- bit0 运动: 速度由固件参数 HOST_MOVE_FEED 决定 --- */
+  /* --- bit0 运动: 速度由固件参数 HOST_MOVE_FEED 决定, 坐标量化至 0.1mm --- */
   if (cmd->flags & HOST_FLAG_MOTION)
   {
-    float x_mm = (float)cmd->x_um * 0.001f;
-    float y_mm = (float)cmd->y_um * 0.001f;
+    float x_mm = (float)((int32_t)(cmd->x_um + (cmd->x_um >= 0 ? 50 : -50)) / 100) * 0.1f;
+    float y_mm = (float)((int32_t)(cmd->y_um + (cmd->y_um >= 0 ? 50 : -50)) / 100) * 0.1f;
     uint8_t stage;
     MotionSys_XY_Result_e ret;
 

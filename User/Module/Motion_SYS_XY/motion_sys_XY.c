@@ -103,6 +103,7 @@ static uint8_t           s_sent_valid;     /* s_last_* 是否有效(Stop 后置 
 static float             s_jd;             /* junction_deviation = scv²(√2−1)/accel
                                               (Klipper toolhead.py:536 同式) */
 static uint16_t          s_watchdog;       /* 通信看门狗计数(仅 RUNNING 累加) */
+static uint32_t          s_idle_enter_tick;/* 规划结束进入 IDLE 的时间戳 (用于 0.1mm 到位容差判定) */
 
 /* ========================================================================== */
 /*  私有辅助                                                                   */
@@ -384,12 +385,12 @@ void MotionSys_XY_Init(void)
   s_time = 0.0f;
   s_enabled = 0U;
   s_state = (uint8_t)MS_XY_IDLE;
+  s_idle_enter_tick = 0U;
   s_inited = 1U;
 
-  /* 订阅节拍: 位置反馈 3ms 轮询 + 本模块 1ms 轨迹执行
-     (必须在 Task_IT_Init/Driver_TIM7_Init 之后, 见 debug_init 调用约定) */
-  TIM_Timer_Subscribe(&tim7_timer, StepMotor_Run, 3U);
-  TIM_Timer_Subscribe(&tim7_timer, MotionSys_XY_Tick, MS_XY_TICK_MS);
+  /* RTOS 多任务架构下:
+     StepMotor_Run(3ms) 与 MotionSys_XY_Tick(1ms) 由 FreeRTOS 任务 MotorCtrlTask
+     以精确 1kHz 周期调用, 不再挂在 TIM7 硬件定时器中断中, 彻底解除中断嵌套阻塞 */
 }
 
 void MotionSys_XY_Enable(bool en)
@@ -427,6 +428,10 @@ MotionSys_XY_Result_e MotionSys_XY_MoveTo(float x, float y, float feed)
     feed = MS_XY_MAX_VEL; /* 仿 Klipper: velocity = min(speed, max_velocity) */
   }
 
+  /* 0.1mm 坐标分辨率网格量化对齐: 保证目标坐标落在 0.1mm 网格点上 */
+  x = (float)((int32_t)(x * 10.0f + (x >= 0.0f ? 0.5f : -0.5f))) * 0.1f;
+  y = (float)((int32_t)(y * 10.0f + (y >= 0.0f ? 0.5f : -0.5f))) * 0.1f;
+
 #if (MS_XY_LIMITS_ENABLE == 1)
   /* 越界按 Klipper 方式拒绝, 不静默裁剪 */
   if (x < MS_XY_X_MIN || x > MS_XY_X_MAX || y < MS_XY_Y_MIN || y > MS_XY_Y_MAX)
@@ -438,9 +443,9 @@ MotionSys_XY_Result_e MotionSys_XY_MoveTo(float x, float y, float feed)
   dx = x - s_tail_x;
   dy = y - s_tail_y;
   d = __builtin_sqrtf(dx * dx + dy * dy);
-  if (d < 1e-4f)
+  if (d < (MS_XY_RESOLUTION_MM * 0.5f))
   {
-    return MS_XY_OK; /* 零长段(与队尾重合)直接忽略 */
+    return MS_XY_OK; /* 移动距离小于半个分辨率单位(0.05mm), 视为已在目标点, 省总线 */
   }
 
   primask = __get_PRIMASK();
@@ -545,6 +550,7 @@ void MotionSys_XY_Stop(void)
   s_streamed = 0U;
   s_watchdog = 0U;
   s_state = (uint8_t)MS_XY_IDLE; /* 同时清除 FAULT */
+  s_idle_enter_tick = SysTime_GetMs();
   __set_PRIMASK(primask);
 
   /* 双电机立即停止(主循环上下文, 独立静态缓冲, 与 Tick 的 QPos 不冲突) */
@@ -623,6 +629,7 @@ void MotionSys_XY_Tick(void)
     else
     {
       s_state = (uint8_t)MS_XY_IDLE; /* 队列排空, 回到空闲 */
+      s_idle_enter_tick = SysTime_GetMs();
       break;
     }
   }
@@ -664,9 +671,49 @@ void MotionSys_XY_Tick(void)
   (void)MS_XY_Stream(MS_XY_PulseA(ax, ay), MS_XY_PulseB(ax, ay));
 }
 
+bool MotionSys_XY_IsArrived(float target_x, float target_y, float tolerance_mm)
+{
+  float act_x = 0.0f, act_y = 0.0f;
+
+  if (!s_inited)
+  {
+    return false;
+  }
+  if (tolerance_mm <= 0.0f)
+  {
+    tolerance_mm = MS_XY_ARRIVE_TOLERANCE_MM;
+  }
+  MotionSys_XY_GetActualPos(&act_x, &act_y);
+  float dx = (act_x >= target_x) ? (act_x - target_x) : (target_x - act_x);
+  float dy = (act_y >= target_y) ? (act_y - target_y) : (target_y - act_y);
+  return (dx <= tolerance_mm && dy <= tolerance_mm);
+}
+
 bool MotionSys_XY_IsBusy(void)
 {
-  return MotionSys_XY_GetState() == MS_XY_RUNNING;
+  if (MotionSys_XY_GetState() == MS_XY_RUNNING)
+  {
+    return true;
+  }
+
+  /* 规划队列已排空: 检查物理实际位置是否已稳定进入 0.1mm 容差范围 */
+  if (s_inited)
+  {
+    float target_x = s_cmd_x;
+    float target_y = s_cmd_y;
+
+    /* 若实际物理位置与目标仍有偏差超过 0.1mm，且在 500ms 等待窗口内，继续保持忙碌等待物理到位 */
+    if (!MotionSys_XY_IsArrived(target_x, target_y, MS_XY_ARRIVE_TOLERANCE_MM))
+    {
+      uint32_t now = SysTime_GetMs();
+      if ((uint32_t)(now - s_idle_enter_tick) < 500U)
+      {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 MotionSys_XY_State_e MotionSys_XY_GetState(void)

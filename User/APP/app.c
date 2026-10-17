@@ -381,6 +381,11 @@ void App_Poll(void)
             MotionSys_XY_MoveTo(s_app.target_x_mm, s_app.target_y_mm, APP_FEED_RATE_MM_S);
             App_SetState(APP_STATE_MOVING_TO_TARGET);
         }
+        else if (now - s_app.state_tick >= 60000U)
+        {
+            /* 超过 60s 未收到上位机重试指令, 回退至 IDLE 待命 */
+            App_SetState(APP_STATE_IDLE);
+        }
         break;
 
     case APP_STATE_GRIP_UP:
@@ -569,11 +574,11 @@ bool App_OnHostCommand(const HostCmd_t *cmd)
         return true;
     }
 
-    /* 5. 运动任务触发 (下发 X, Y 坐标) */
+    /* 5. 运动任务触发 (下发 X, Y 坐标, 量化对齐至 0.1mm 网格) */
     if (cmd->flags & HOST_FLAG_MOTION)
     {
-        s_app.target_x_mm     = (float)cmd->x_um * 0.001f;
-        s_app.target_y_mm     = (float)cmd->y_um * 0.001f;
+        s_app.target_x_mm     = (float)((int32_t)(cmd->x_um + (cmd->x_um >= 0 ? 50 : -50)) / 100) * 0.1f;
+        s_app.target_y_mm     = (float)((int32_t)(cmd->y_um + (cmd->y_um >= 0 ? 50 : -50)) / 100) * 0.1f;
         s_app.current_task_id = cmd->task_id;
         s_app.has_task        = true;
         s_app.permit_granted  = false;

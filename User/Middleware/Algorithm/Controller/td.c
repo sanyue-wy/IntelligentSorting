@@ -35,6 +35,21 @@ void TD_Init(TD_t *td, float r, float control_period)
 }
 
 /**
+  * @brief  复位跟踪微分器运行态
+  */
+void TD_Clear(TD_t *td)
+{
+  if (td == NULL)
+  {
+    return;
+  }
+  td->Input   = 0.0f;
+  td->X       = 0.0f;
+  td->DX      = 0.0f;
+  td->DDX     = 0.0f;
+}
+
+/**
   * @brief  计算一步跟踪
   * @note   半隐式欧拉积分: 先更新速度再更新位置, 比显式积分稳定
   */

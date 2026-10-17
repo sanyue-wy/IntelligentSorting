@@ -8,6 +8,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "drv_can.h"
+#include <string.h>
 
 /* Private macros ------------------------------------------------------------*/
 
@@ -34,17 +35,6 @@
 /* 对象注册表(静态分配, 无堆操作) */
 static CAN_BusObject *s_bus_registry[CAN_BUS_MAX_INSTANCES];
 static uint8_t s_bus_count = 0;
-
-/**
-  * @brief  CAN1 默认周期发送帧表(仿照参考实现: 电机帧每拍发, 超级电容 1/10 拍发)
-  * @note   按实际挂载设备增删修改
-  * @note   0x1FF/0x200/0x2FF 不得入表: 它们是 DJ 电机电流指令帧 ID,
-  *         由 DJ_MotorRun 直发; 若留在表里, CAN_Bus_Tick 每毫秒发的全零帧
-  *         会与真实电流指令抢总线/挤爆 3 个发送邮箱
-  */
-static CAN_TxFrame_t CAN1_TxFrames[] = {
-    {.id = 0x220, .period = 10},
-};
 
 CAN_BusObject can1_bus;
 
@@ -81,13 +71,23 @@ static CAN_BusObject *CAN_Bus_FindByHandle(CAN_HandleTypeDef *hcan)
   */
 void Driver_CAN1_Init(void)
 {
-  /* 一次完成 登记 -> 全收滤波 -> 启动 -> 开中断 */
-  if (CAN_Bus_Init(&can1_bus, &hcan1, "CAN1", NULL,
-                   CAN1_TxFrames,
-                   (uint8_t)(sizeof(CAN1_TxFrames) / sizeof(CAN1_TxFrames[0]))) != 0)
+  /* 配置并使能 CAN1 发送完成中断 (优先级 5, 符合 FreeRTOS 系统调用安全范围) */
+  HAL_NVIC_SetPriority(CAN1_TX_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(CAN1_TX_IRQn);
+
+  /* 一次完成 登记 -> 全收滤波 -> 启动 -> 开中断 (无需周期占位帧, 传 NULL, 0) */
+  if (CAN_Bus_Init(&can1_bus, &hcan1, "CAN1", NULL, NULL, 0) != 0)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief  CAN1 发送中断处理入口 (覆盖启动文件弱定义)
+  */
+void CAN1_TX_IRQHandler(void)
+{
+  HAL_CAN_IRQHandler(&hcan1);
 }
 
 /**
@@ -122,7 +122,9 @@ uint8_t CAN_Bus_Init(CAN_BusObject *bus, CAN_HandleTypeDef *hcan, const char *na
   bus->stats.tx_count = 0;
   bus->stats.rx_error = 0;
   bus->stats.tx_error = 0;
+  bus->stats.tx_drop  = 0;
   bus->stats.bus_error = 0;
+  memset(&bus->tx_queue, 0, sizeof(bus->tx_queue));
 
   /* 登记: 重复 Init 则原位更新, 否则追加 */
   for (i = 0; i < s_bus_count; i++)
@@ -155,7 +157,8 @@ uint8_t CAN_Bus_Init(CAN_BusObject *bus, CAN_HandleTypeDef *hcan, const char *na
   {
     return 4;
   }
-  if (HAL_CAN_ActivateNotification(hcan, CAN_IT_RX_FIFO0_MSG_PENDING) != HAL_OK)
+  if (HAL_CAN_ActivateNotification(hcan, CAN_IT_RX_FIFO0_MSG_PENDING |
+                                         CAN_IT_TX_MAILBOX_EMPTY) != HAL_OK)
   {
     return 5;
   }
@@ -222,70 +225,162 @@ uint8_t CAN_Bus_Subscribe(CAN_BusObject *bus, uint16_t std_id, CAN_RxCallback_t 
 }
 
 /**
-  * @brief  立即发送一帧标准数据帧(事件型)
+  * @brief  将软件队列中的待发帧推进至硬件可用邮箱
+  * @param  bus 总线对象
+  */
+void CAN_Bus_PumpTxQueue(CAN_BusObject *bus)
+{
+  if (bus == NULL || bus->hcan == NULL)
+  {
+    return;
+  }
+
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
+
+  while ((bus->tx_queue.count > 0U) && (HAL_CAN_GetTxMailboxesFreeLevel(bus->hcan) > 0U))
+  {
+    uint32_t mailbox;
+    CAN_QueueFrame_t *frame = &bus->tx_queue.fifo[bus->tx_queue.tail];
+    if (HAL_CAN_AddTxMessage(bus->hcan, &frame->header, frame->data, &mailbox) == HAL_OK)
+    {
+      bus->tx_queue.tail = (uint16_t)((bus->tx_queue.tail + 1U) % CAN_TX_FIFO_SIZE);
+      bus->tx_queue.count--;
+      bus->stats.tx_count++;
+    }
+    else
+    {
+      break;
+    }
+  }
+
+  __set_PRIMASK(primask);
+}
+
+/**
+  * @brief  发送一帧标准数据帧(优先硬件邮箱直发, 邮箱满则入队缓冲)
   * @param  bus    总线对象
   * @param  std_id 标准帧 ID (0x000~0x7FF)
   * @param  data   数据指针
   * @param  length 长度 (0~8)
-  * @retval 0 成功; 1 参数错误; 2 发送失败(邮箱满/总线未启动)
+  * @retval 0 成功入队或已直发; 1 参数错误; 2 队列满溢丢弃
   */
 uint8_t CAN_Bus_Send(CAN_BusObject *bus, uint16_t std_id, uint8_t *data, uint8_t length)
 {
-  CAN_TxHeaderTypeDef tx_header;
-  uint32_t tx_mailbox;
-
   if (bus == NULL || bus->hcan == NULL || data == NULL || std_id > 0x7FFU || length > 8U)
   {
     return 1;
   }
 
-  tx_header.StdId = std_id;
-  tx_header.ExtId = 0;
-  tx_header.IDE = CAN_ID_STD;
-  tx_header.RTR = CAN_RTR_DATA;
-  tx_header.DLC = length;
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
 
-  if (HAL_CAN_AddTxMessage(bus->hcan, &tx_header, data, &tx_mailbox) != HAL_OK)
+  /* 若队列为空且硬件有空闲邮箱，直接尝试直发加速 */
+  if (bus->tx_queue.count == 0U && HAL_CAN_GetTxMailboxesFreeLevel(bus->hcan) > 0U)
   {
-    bus->stats.tx_error++;
-    return 2;
+    CAN_TxHeaderTypeDef tx_header;
+    uint32_t tx_mailbox;
+    tx_header.StdId = std_id;
+    tx_header.ExtId = 0;
+    tx_header.IDE   = CAN_ID_STD;
+    tx_header.RTR   = CAN_RTR_DATA;
+    tx_header.DLC   = length;
+
+    if (HAL_CAN_AddTxMessage(bus->hcan, &tx_header, data, &tx_mailbox) == HAL_OK)
+    {
+      bus->stats.tx_count++;
+      __set_PRIMASK(primask);
+      return 0;
+    }
   }
 
-  bus->stats.tx_count++;
+  /* 邮箱满或已有排队帧：压入软件 FIFO */
+  if (bus->tx_queue.count >= CAN_TX_FIFO_SIZE)
+  {
+    bus->tx_queue.drop_count++;
+    bus->stats.tx_drop++;
+    bus->stats.tx_error++;
+    __set_PRIMASK(primask);
+    return 2; /* 队列溢出 */
+  }
+
+  CAN_QueueFrame_t *slot = &bus->tx_queue.fifo[bus->tx_queue.head];
+  slot->header.StdId = std_id;
+  slot->header.ExtId = 0;
+  slot->header.IDE   = CAN_ID_STD;
+  slot->header.RTR   = CAN_RTR_DATA;
+  slot->header.DLC   = length;
+  memcpy(slot->data, data, length);
+
+  bus->tx_queue.head = (uint16_t)((bus->tx_queue.head + 1U) % CAN_TX_FIFO_SIZE);
+  bus->tx_queue.count++;
+
+  __set_PRIMASK(primask);
+
+  /* 触发队列推进 */
+  CAN_Bus_PumpTxQueue(bus);
   return 0;
 }
 
 /**
-  * @brief  立即发送一帧扩展数据帧(ZDT 等按扩展帧 ID 寻址的设备用)
+  * @brief  发送一帧扩展数据帧(ZDT 步进电机等用, 优先直发, 满则入队)
   * @param  bus    总线对象
   * @param  ext_id 扩展帧 ID (0x00000000~0x1FFFFFFF)
   * @param  data   数据指针
   * @param  length 长度 (0~8)
-  * @retval 0 成功; 1 参数错误; 2 发送失败(邮箱满/总线未启动)
+  * @retval 0 成功入队或已直发; 1 参数错误; 2 队列满溢丢弃
   */
 uint8_t CAN_Bus_SendExt(CAN_BusObject *bus, uint32_t ext_id, uint8_t *data, uint8_t length)
 {
-  CAN_TxHeaderTypeDef tx_header;
-  uint32_t tx_mailbox;
-
   if (bus == NULL || bus->hcan == NULL || data == NULL || ext_id > 0x1FFFFFFFU || length > 8U)
   {
     return 1;
   }
 
-  tx_header.StdId = 0;
-  tx_header.ExtId = ext_id;
-  tx_header.IDE = CAN_ID_EXT;
-  tx_header.RTR = CAN_RTR_DATA;
-  tx_header.DLC = length;
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
 
-  if (HAL_CAN_AddTxMessage(bus->hcan, &tx_header, data, &tx_mailbox) != HAL_OK)
+  if (bus->tx_queue.count == 0U && HAL_CAN_GetTxMailboxesFreeLevel(bus->hcan) > 0U)
   {
+    CAN_TxHeaderTypeDef tx_header;
+    uint32_t tx_mailbox;
+    tx_header.StdId = 0;
+    tx_header.ExtId = ext_id;
+    tx_header.IDE   = CAN_ID_EXT;
+    tx_header.RTR   = CAN_RTR_DATA;
+    tx_header.DLC   = length;
+
+    if (HAL_CAN_AddTxMessage(bus->hcan, &tx_header, data, &tx_mailbox) == HAL_OK)
+    {
+      bus->stats.tx_count++;
+      __set_PRIMASK(primask);
+      return 0;
+    }
+  }
+
+  if (bus->tx_queue.count >= CAN_TX_FIFO_SIZE)
+  {
+    bus->tx_queue.drop_count++;
+    bus->stats.tx_drop++;
     bus->stats.tx_error++;
+    __set_PRIMASK(primask);
     return 2;
   }
 
-  bus->stats.tx_count++;
+  CAN_QueueFrame_t *slot = &bus->tx_queue.fifo[bus->tx_queue.head];
+  slot->header.StdId = 0;
+  slot->header.ExtId = ext_id;
+  slot->header.IDE   = CAN_ID_EXT;
+  slot->header.RTR   = CAN_RTR_DATA;
+  slot->header.DLC   = length;
+  memcpy(slot->data, data, length);
+
+  bus->tx_queue.head = (uint16_t)((bus->tx_queue.head + 1U) % CAN_TX_FIFO_SIZE);
+  bus->tx_queue.count++;
+
+  __set_PRIMASK(primask);
+
+  CAN_Bus_PumpTxQueue(bus);
   return 0;
 }
 
@@ -363,6 +458,9 @@ void CAN_Bus_Tick(void)
   for (uint8_t i = 0; i < s_bus_count; i++)
   {
     CAN_BusObject *bus = s_bus_registry[i];
+
+    /* 周期性兜底推进软件发送队列 */
+    CAN_Bus_PumpTxQueue(bus);
 
     for (uint8_t f = 0; f < bus->tx_frame_count; f++)
     {
@@ -455,6 +553,42 @@ void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
   if (bus != NULL)
   {
     bus->stats.bus_error++;
+  }
+}
+
+/**
+  * @brief  HAL 库 CAN 发送邮箱 0 传输完成中断回调 (覆盖 HAL 弱定义)
+  */
+void HAL_CAN_TxMailbox0CompleteCallback(CAN_HandleTypeDef *hcan)
+{
+  CAN_BusObject *bus = CAN_Bus_FindByHandle(hcan);
+  if (bus != NULL)
+  {
+    CAN_Bus_PumpTxQueue(bus);
+  }
+}
+
+/**
+  * @brief  HAL 库 CAN 发送邮箱 1 传输完成中断回调 (覆盖 HAL 弱定义)
+  */
+void HAL_CAN_TxMailbox1CompleteCallback(CAN_HandleTypeDef *hcan)
+{
+  CAN_BusObject *bus = CAN_Bus_FindByHandle(hcan);
+  if (bus != NULL)
+  {
+    CAN_Bus_PumpTxQueue(bus);
+  }
+}
+
+/**
+  * @brief  HAL 库 CAN 发送邮箱 2 传输完成中断回调 (覆盖 HAL 弱定义)
+  */
+void HAL_CAN_TxMailbox2CompleteCallback(CAN_HandleTypeDef *hcan)
+{
+  CAN_BusObject *bus = CAN_Bus_FindByHandle(hcan);
+  if (bus != NULL)
+  {
+    CAN_Bus_PumpTxQueue(bus);
   }
 }
 

@@ -19,11 +19,12 @@ void Task_IT_Init(void)
 {
     Driver_TIM7_Init();  /* TIM7 1ms 系统节拍(登记 -> 重算时间基 -> 开中断) */
 
-    /* ---- 1ms 节拍服务 ---- */
+    /* ---- 1ms 硬件定时器节拍: 仅保留轻量级 LED 心跳与驱动层通信节拍,
+       所有复杂浮点控制(MS_XY_Tick / DJ_MotorRun / StepMotor_Run)均交由
+       FreeRTOS 独立硬实时控制任务 MotorCtrlTask 执行, 彻底解除 ISR 阻塞 ---- */
     TIM_Timer_Subscribe(&tim7_timer, MM_TIM_Callback, 1);
-    TIM_Timer_Subscribe(&tim7_timer, Task_it_callback, 1);
     TIM_Timer_Subscribe(&tim7_timer, UART_Port_Tick, 1);   /* drv_uart 周期发送 */
-    TIM_Timer_Subscribe(&tim7_timer, CAN_Bus_Tick, 1);     /* drv_can 周期发送 */
+    TIM_Timer_Subscribe(&tim7_timer, CAN_Bus_Tick, 1);     /* drv_can 周期发送与队列推进 */
 }
 
 /* 毫秒定时器 */
@@ -38,40 +39,9 @@ void MM_TIM_Callback(void)
 
         count = 0;
     }
-   // SineGen_Update();
-}
-void TASK_1MS_TIM_callback(void)
-{
-    /* DJ_MotorRun 已移至 Task_it_callback (3ms周期) */
 }
 
 void Task_it_callback(void)
 {
-    static uint16_t count1=0;
-    static uint16_t count2=0;
-    static uint16_t count3=0;
-    if (++count3>=5)
-    {
-        count3 = 0;
-        Chassis_YawControl();  // 航向PID（~200 cycles）
-       Chassis_Run();
-    }
-
-    /* 3ms 周期: 必须与 dji_3508.h 的 DJ_CTRL_PERIOD(0.003f) 一致,
-       否则 PID/TD 的 ControlPeriod 与实际调用周期不符, 整定值失真 */
-    if (++count2>=3)
-    {
-        count2 = 0;
-        DJ_MotorRun();
-    }
-
-
-    if (++count1 >=1000)
-    {
-        count1 = 0;
-
-    }
-
-
-
+    /* 电机实时控制逻辑已迁移至 FreeRTOS MotorCtrlTask 任务 */
 }

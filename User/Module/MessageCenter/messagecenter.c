@@ -1,9 +1,9 @@
 /**
  * @file    messagecenter.c
  * @brief   轻量级发布-订阅 (Pub/Sub) 消息中心机制实现
- *          仿造 HNUYueLuRM/basic_framework modules/message_center 改写
- * @version 1.0
- * @date    2026-10-12
+ *          基于静态对象池架构, 彻底去除动态内存分配, 临界区精细化瘦身
+ * @version 2.0
+ * @date    2026-10-17
  */
 
 #include "messagecenter.h"
@@ -14,13 +14,46 @@ static Publisher_t message_center = {
     .topic_name = "Message_Manager",
     .first_subs = NULL,
     .next_topic_node = NULL,
-    .pub_registered_flag = 0
+    .pub_registered_flag = 0,
+    .in_use = 1
 };
+
+/* 静态对象池 */
+static Publisher_t  s_topic_pool[MC_MAX_TOPICS];
+static Subscriber_t s_sub_pool[MC_MAX_SUBSCRIBERS];
+
+static Publisher_t *AllocTopicNode(void)
+{
+    for (size_t i = 0; i < MC_MAX_TOPICS; i++)
+    {
+        if (!s_topic_pool[i].in_use)
+        {
+            memset(&s_topic_pool[i], 0, sizeof(Publisher_t));
+            s_topic_pool[i].in_use = 1;
+            return &s_topic_pool[i];
+        }
+    }
+    return NULL;
+}
+
+static Subscriber_t *AllocSubscriberNode(void)
+{
+    for (size_t i = 0; i < MC_MAX_SUBSCRIBERS; i++)
+    {
+        if (!s_sub_pool[i].in_use)
+        {
+            memset(&s_sub_pool[i], 0, sizeof(Subscriber_t));
+            s_sub_pool[i].in_use = 1;
+            return &s_sub_pool[i];
+        }
+    }
+    return NULL;
+}
 
 /* 话题查找或创建统一辅助函数 */
 static Publisher_t *FindOrCreateTopic(const char *name, uint8_t data_len, uint8_t is_pub)
 {
-    if (name == NULL || data_len == 0)
+    if (name == NULL || data_len == 0 || data_len > MC_MAX_PAYLOAD_SIZE)
     {
         return NULL;
     }
@@ -52,15 +85,14 @@ static Publisher_t *FindOrCreateTopic(const char *name, uint8_t data_len, uint8_
         }
     }
 
-    /* 尚未注册过该话题, 分配新话题节点并挂入链表尾部 */
-    Publisher_t *new_node = (Publisher_t *)MC_MALLOC(sizeof(Publisher_t));
+    /* 尚未注册过该话题, 从静态池分配新话题节点并挂入链表尾部 */
+    Publisher_t *new_node = AllocTopicNode();
     if (new_node == NULL)
     {
         MC_EXIT_CRITICAL();
         return NULL;
     }
 
-    memset(new_node, 0, sizeof(Publisher_t));
     new_node->data_len = data_len;
     strncpy(new_node->topic_name, name, MC_MAX_TOPIC_NAME_LEN);
     new_node->topic_name[MC_MAX_TOPIC_NAME_LEN] = '\0';
@@ -85,33 +117,20 @@ Subscriber_t *SubRegister(const char *name, uint8_t data_len)
         return NULL;
     }
 
-    Subscriber_t *ret = (Subscriber_t *)MC_MALLOC(sizeof(Subscriber_t));
+    MC_ENTER_CRITICAL();
+    Subscriber_t *ret = AllocSubscriberNode();
     if (ret == NULL)
     {
+        MC_EXIT_CRITICAL();
         return NULL;
     }
 
-    memset(ret, 0, sizeof(Subscriber_t));
     ret->data_len = data_len;
+    ret->front_idx = 0;
+    ret->back_idx = 0;
+    ret->temp_size = 0;
+    ret->next_subs_queue = NULL;
 
-    /* 为队列中的每个槽位分配空间 */
-    for (size_t i = 0; i < MC_QUEUE_SIZE; ++i)
-    {
-        ret->queue[i] = MC_MALLOC(data_len);
-        if (ret->queue[i] == NULL)
-        {
-            /* 内存不足回滚释放 */
-            for (size_t j = 0; j < i; ++j)
-            {
-                MC_FREE(ret->queue[j]);
-            }
-            MC_FREE(ret);
-            return NULL;
-        }
-        memset(ret->queue[i], 0, data_len);
-    }
-
-    MC_ENTER_CRITICAL();
     if (pub->first_subs == NULL)
     {
         pub->first_subs = ret;
@@ -144,11 +163,12 @@ uint8_t SubGetMessage(Subscriber_t *sub, void *data_ptr)
         return 0;
     }
 
-    memcpy(data_ptr, sub->queue[sub->front_idx], sub->data_len);
-    sub->front_idx = (sub->front_idx + 1) % MC_QUEUE_SIZE;
+    uint8_t idx = sub->front_idx;
+    sub->front_idx = (uint8_t)((sub->front_idx + 1) % MC_QUEUE_SIZE);
     sub->temp_size--;
     MC_EXIT_CRITICAL();
 
+    memcpy(data_ptr, sub->queue[idx], sub->data_len);
     return 1;
 }
 
@@ -160,27 +180,28 @@ uint8_t PubPushMessage(Publisher_t *pub, const void *data_ptr)
     }
 
     uint8_t pushed_count = 0;
-
-    MC_ENTER_CRITICAL();
     Subscriber_t *iter = pub->first_subs;
+
     while (iter)
     {
+        MC_ENTER_CRITICAL();
         if (iter->temp_size == MC_QUEUE_SIZE)
         {
             /* 队列已满时覆盖最老数据(队头前移) */
-            iter->front_idx = (iter->front_idx + 1) % MC_QUEUE_SIZE;
+            iter->front_idx = (uint8_t)((iter->front_idx + 1) % MC_QUEUE_SIZE);
             iter->temp_size--;
         }
 
-        /* 写入新数据到队尾 */
-        memcpy(iter->queue[iter->back_idx], data_ptr, pub->data_len);
-        iter->back_idx = (iter->back_idx + 1) % MC_QUEUE_SIZE;
+        uint8_t target_idx = iter->back_idx;
+        iter->back_idx = (uint8_t)((iter->back_idx + 1) % MC_QUEUE_SIZE);
         iter->temp_size++;
+        MC_EXIT_CRITICAL();
 
+        memcpy(iter->queue[target_idx], data_ptr, pub->data_len);
         pushed_count++;
+
         iter = iter->next_subs_queue;
     }
-    MC_EXIT_CRITICAL();
 
     return pushed_count;
 }

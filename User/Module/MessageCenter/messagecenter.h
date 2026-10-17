@@ -20,16 +20,14 @@ extern "C" {
 /* 最大话题名称字符长度(不含字符串结尾符 '\0') */
 #define MC_MAX_TOPIC_NAME_LEN   32U
 
+/* 静态池配置: 彻底摒弃 malloc, 避免内存碎片与不确定耗时 */
+#define MC_MAX_TOPICS           16U
+#define MC_MAX_SUBSCRIBERS      32U
+#define MC_MAX_PAYLOAD_SIZE     64U
+
 /* 队列深度: 默认1(邮箱模式, 始终保持最新数据) */
 #ifndef MC_QUEUE_SIZE
 #define MC_QUEUE_SIZE           1U
-#endif
-
-/* 内存分配抽象宏(可替换为 FreeRTOS pvPortMalloc/vPortFree 或标准库) */
-#ifndef MC_MALLOC
-#include <stdlib.h>
-#define MC_MALLOC(size)         malloc(size)
-#define MC_FREE(ptr)            free(ptr)
 #endif
 
 /* 临界区并发保护抽象 (基于 ARM CMSIS 通用内核层, 彻底解耦芯片外设 HAL) */
@@ -43,11 +41,12 @@ extern "C" {
  * @brief 订阅者结构体
  */
 typedef struct Subscriber_s {
-    void *queue[MC_QUEUE_SIZE];           /* FIFO 循环队列缓冲区指针数组 */
+    uint8_t queue[MC_QUEUE_SIZE][MC_MAX_PAYLOAD_SIZE]; /* 静态循环队列缓冲区 */
     uint8_t data_len;                     /* 单条消息负载字节数 */
     uint8_t front_idx;                    /* 队头索引(读出) */
     uint8_t back_idx;                     /* 队尾索引(写入) */
     uint8_t temp_size;                    /* 当前队列中待读消息数量 */
+    uint8_t in_use;                       /* 槽位占用标志 */
     struct Subscriber_s *next_subs_queue; /* 指向订阅相同话题的下一个订阅者 */
 } Subscriber_t;
 
@@ -57,9 +56,10 @@ typedef struct Subscriber_s {
 typedef struct Publisher_s {
     char topic_name[MC_MAX_TOPIC_NAME_LEN + 1U]; /* 话题字符串名称 */
     uint8_t data_len;                            /* 该话题单条消息字节数 */
+    uint8_t pub_registered_flag;                 /* 是否已有正式发布者注册标志 */
+    uint8_t in_use;                              /* 槽位占用标志 */
     Subscriber_t *first_subs;                    /* 订阅了该话题的订阅者单向链表头 */
     struct Publisher_s *next_topic_node;         /* 下一个话题节点指针 */
-    uint8_t pub_registered_flag;                 /* 是否已有正式发布者注册标志 */
 } Publisher_t;
 
 /**
